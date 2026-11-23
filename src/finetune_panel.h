@@ -64,13 +64,23 @@ class FineTunePanel : public NotifyConsumer {
   ButtonContainer flow_reset_btn;
   ButtonContainer flow_up_btn;
   ButtonContainer flow_down_btn;
-  ButtonContainer back_btn;
   Selector zoffset_selector;
   Selector multipler_selector;
   ImageLabel z_offset;
   ImageLabel pa;
   ImageLabel speed_factor;
   ImageLabel flow_factor;
+
+  // Значение, изменение которого сообщил принтер, на секунду обводится жёлтой
+  // рамкой: пользователь видит, какое значение изменило его нажатие.
+  enum Value { Z_OFFSET, PA, SPEED, FLOW, VALUE_COUNT };
+  ImageLabel *const values[VALUE_COUNT] = {&z_offset, &pa, &speed_factor, &flow_factor};
+  lv_timer_t *flash_timers[VALUE_COUNT];
+  void show(Value value, const std::string &text, bool flash_if_changed);
+  // Четыре значения из объектов Klipper (/printer_state из State или params
+  // уведомления): показываются те, что есть.
+  void show_values(const json &printer, bool flash_changes);
+  static void end_flash(lv_timer_t *timer);
 };
 
 #endif  // __FINETINE_PANEL_H__

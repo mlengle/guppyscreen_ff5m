@@ -1,5 +1,4 @@
 #include "console_panel.h"
-#include "state.h"
 #include "spdlog/spdlog.h"
 
 #include <algorithm>
@@ -155,23 +154,13 @@ void ConsolePanel::handle_kb_input(lv_event_t *e)
 
     ws.gcode_script(cmd);
 
-    if (!history.empty()) {
-      const auto &front = history.front();
-
-      if (front != std::string(cmd)) {
-        if (history.size() >= 20) {
-          history.pop_back();
-        }
-        history.push_front(cmd);
-
-        json h = {
-          {"namespace", "fluidd"}, // leverage history from fluidd
-          {"key", "console.commandHistory"},
-          {"value", history}
-        };
-
-        ws.send_jsonrpc("server.database.post_item", h);
+    if (history.empty() || history.front() != cmd) {
+      if (history.size() >= 20) {
+        history.pop_back();
       }
+      history.push_front(cmd);
+
+      if (history_loaded) save_history();
     }
 
     lv_textarea_set_text(input, "");
@@ -199,16 +188,46 @@ void ConsolePanel::handle_select_macro(lv_event_t *e) {
   }
 }
 
+void ConsolePanel::save_history() {
+  ws.send_jsonrpc("server.database.post_item", {
+    {"namespace", "fluidd"}, {"key", "console.commandHistory"}, {"value", history}
+  });
+}
+
+void ConsolePanel::load_history() {
+  {
+    std::lock_guard<std::mutex> lock(lv_lock);
+    if (history_loaded) history.clear();
+    history_loaded = false;
+  }
+  ws.send_jsonrpc("server.database.get_item", {{"namespace", "fluidd"}, {"key", "console"}}, [this](json &j) {
+    if (j.contains("error") && j["error"].value("code", 0) != 404) return;
+    const auto &saved = j["/result/value/commandHistory"_json_pointer];
+    if (!saved.is_null() && !saved.is_array()) return;
+
+    std::lock_guard<std::mutex> lock(lv_lock);
+    // Пока Moonraker отвечал, пользователь мог уже отправить команды.
+    const bool pending = !history.empty();
+    auto first = saved.begin();
+    if (pending && first != saved.end() && *first == history.back()) ++first;
+    for (; first != saved.end() && history.size() < 20; ++first) {
+      if (first->is_string()) history.push_back(first->get<std::string>());
+    }
+    history_loaded = true;
+    if (pending) save_history();
+    lv_event_send(input, LV_EVENT_VALUE_CHANGED, nullptr);
+  });
+}
+
 void ConsolePanel::handle_macros(json &j) {
   uint32_t index = 0;
 
-  // TODO: this is a race condition
-  auto &db_history = State::get_instance()->get_data("/console/commandHistory"_json_pointer);
+  // Runs on the websocket thread on every (re)connect. `history` and
+  // `all_macros` are also used by the input handlers on the LVGL thread.
+  std::lock_guard<std::mutex> lock(lv_lock);
 
-  if (!db_history.is_null()) {
-    history = db_history.template get<std::list<std::string>>();
-  }
-
+  // Rebuild the list, don't append to it.
+  all_macros.clear();
   if (j.contains("result")) {
     const auto &m = j["result"];
     for (const auto &el : m.items()) {
@@ -216,7 +235,6 @@ void ConsolePanel::handle_macros(json &j) {
     }
   }
 
-  std::lock_guard<std::mutex> lock(lv_lock);
   for (const auto &m : history) {
     lv_table_set_cell_value(macro_list, index++, 0, m.c_str());
   }
@@ -224,6 +242,7 @@ void ConsolePanel::handle_macros(json &j) {
   for (const auto &m : all_macros) {
     lv_table_set_cell_value(macro_list, index++, 0, m.c_str());
   }
+  lv_table_set_row_cnt(macro_list, index);
 }
 
 void ConsolePanel::handle_macro_response(json &j) {

@@ -1,4 +1,5 @@
 #include "sysinfo_panel.h"
+#include "nav.h"
 #include "utils.h"
 #include "config.h"
 #include "theme.h"
@@ -16,7 +17,6 @@
 
 namespace fs = std::experimental::filesystem;
 
-LV_IMG_DECLARE(back);
 
 #ifdef GUPPYSCREEN_VERSION
 #define GS_VERSION GUPPYSCREEN_VERSION
@@ -50,7 +50,7 @@ static std::map<int32_t, uint32_t> sleepsec_to_dd_idx = {
 };
 
 static std::map<std::string, uint32_t> sleep_label_to_sec = {
-  {"Никогда", -1}, // never
+  {"None", -1}, // never
   {"5m", 300}, // 5 min
   {"10m", 600}, // 10 min
   {"20m", 1200}, // 20 min
@@ -59,12 +59,16 @@ static std::map<std::string, uint32_t> sleep_label_to_sec = {
   {"5h", 18000} // 5 hour
 };
 
-SysInfoPanel::SysInfoPanel(KWebSocketClient &c)
-  : cont(lv_obj_create(lv_scr_act()))
+SysInfoPanel::SysInfoPanel(KWebSocketClient &c
+#ifdef GUPPY_FF5M
+                            , std::function<void(bool)> clock_changed_cb
+#endif
+                            )
+  : ws(c)
+  , cont(lv_obj_create(Nav::get().content()))
   , left_cont(lv_obj_create(cont))
   , right_cont(lv_obj_create(cont))
   , network_label(lv_label_create(right_cont))
-  , ws(c)
     // display sleep
   , disp_sleep_cont(lv_obj_create(left_cont))
   , display_sleep_dd(lv_dropdown_create(disp_sleep_cont))
@@ -81,6 +85,13 @@ SysInfoPanel::SysInfoPanel(KWebSocketClient &c)
     // estop prompt
   , estop_toggle_cont(lv_obj_create(left_cont))
   , prompt_estop_toggle(lv_switch_create(estop_toggle_cont))
+  , exclude_toggle_cont(lv_obj_create(left_cont))
+  , prompt_exclude_toggle(lv_switch_create(exclude_toggle_cont))
+#ifdef GUPPY_FF5M
+  , clock_toggle_cont(lv_obj_create(left_cont))
+  , clock_toggle(lv_switch_create(clock_toggle_cont))
+  , clock_changed(std::move(clock_changed_cb))
+#endif
 
 #ifndef GUPPY_FF5M
     // Z axis icons
@@ -93,7 +104,6 @@ SysInfoPanel::SysInfoPanel(KWebSocketClient &c)
   , theme(0)
 #endif
 
-  , back_btn(cont, &back, _("Back") /* "Назад" */, &SysInfoPanel::_handle_callback, this)
 {
   lv_obj_move_background(cont);
   lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
@@ -118,7 +128,7 @@ SysInfoPanel::SysInfoPanel(KWebSocketClient &c)
   lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
   lv_obj_align(display_sleep_dd, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_dropdown_set_options(display_sleep_dd,
-                          "None"
+                          "None\n"
                           "5m\n"
                           "10m\n"
                           "20m\n"
@@ -213,6 +223,29 @@ SysInfoPanel::SysInfoPanel(KWebSocketClient &c)
   lv_obj_add_event_cb(prompt_estop_toggle, &SysInfoPanel::_handle_callback,
                       LV_EVENT_VALUE_CHANGED, this);
 
+  lv_obj_set_size(exclude_toggle_cont, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_style_pad_all(exclude_toggle_cont, 0, 0);
+  l = lv_label_create(exclude_toggle_cont);
+  lv_label_set_text(l, _("Object exclusion confirmation"));
+  lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_align(prompt_exclude_toggle, LV_ALIGN_RIGHT_MID, 0, 0);
+  if (conf->get<bool>("/prompt_exclude_object"))
+    lv_obj_add_state(prompt_exclude_toggle, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(prompt_exclude_toggle, &SysInfoPanel::_handle_callback,
+                      LV_EVENT_VALUE_CHANGED, this);
+
+#ifdef GUPPY_FF5M
+  lv_obj_set_size(clock_toggle_cont, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_style_pad_all(clock_toggle_cont, 0, 0);
+  l = lv_label_create(clock_toggle_cont);
+  lv_label_set_text(l, _("Clock") /* "Часы" */);
+  lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_align(clock_toggle, LV_ALIGN_RIGHT_MID, 0, 0);
+  if (conf->get<bool>("/show_clock")) lv_obj_add_state(clock_toggle, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(clock_toggle, &SysInfoPanel::_handle_callback,
+                      LV_EVENT_VALUE_CHANGED, this);
+#endif
+
 #ifndef GUPPY_FF5M
     /* Z icon selection */
   lv_obj_set_size(z_icon_toggle_cont, LV_PCT(100), LV_SIZE_CONTENT);
@@ -262,8 +295,6 @@ SysInfoPanel::SysInfoPanel(KWebSocketClient &c)
                       LV_EVENT_VALUE_CHANGED, this);
 #endif
 
-  lv_obj_add_flag(back_btn.get_container(), LV_OBJ_FLAG_FLOATING);
-  lv_obj_align(back_btn.get_container(), LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 }
 
 SysInfoPanel::~SysInfoPanel() {
@@ -283,19 +314,13 @@ void SysInfoPanel::foreground() {
     auto ip = KUtils::interface_ip(iface);
     network_detail.push_back(fmt::format("\t{}: {}", iface, ip));
   }
-  lv_label_set_text(network_label, fmt::format("{}\n\nGuppyScreen\n\tVersion: " GS_VERSION ".1.5.1",
+  lv_label_set_text(network_label, fmt::format("{}\n\nGuppyScreen\n\tVersion: " GS_VERSION,
                                                fmt::join(network_detail, "\n")).c_str());
 }
 
 void SysInfoPanel::handle_callback(lv_event_t *e)
 {
   if (lv_event_get_code(e) == LV_EVENT_SHORT_CLICKED) {
-    lv_obj_t *btn = lv_event_get_current_target(e);
-
-    if (btn == back_btn.get_container())
-    {
-      lv_obj_move_background(cont);
-    }
   }
   else if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
     lv_obj_t *obj = lv_event_get_target(e);
@@ -320,6 +345,18 @@ void SysInfoPanel::handle_callback(lv_event_t *e)
       conf->set<bool>("/prompt_emergency_stop", should_prompt);
       conf->save();
     }
+    else if (obj == prompt_exclude_toggle) {
+      conf->set<bool>("/prompt_exclude_object", lv_obj_has_state(prompt_exclude_toggle, LV_STATE_CHECKED));
+      conf->save();
+    }
+#ifdef GUPPY_FF5M
+    else if (obj == clock_toggle) {
+      const bool enabled = lv_obj_has_state(clock_toggle, LV_STATE_CHECKED);
+      conf->set<bool>("/show_clock", enabled);
+      conf->save();
+      clock_changed(enabled);
+    }
+#endif
     else if (obj == display_sleep_dd) {
       char buf[64];
       lv_dropdown_get_selected_str(display_sleep_dd, buf, sizeof(buf));

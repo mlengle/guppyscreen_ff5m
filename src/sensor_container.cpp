@@ -3,6 +3,9 @@
 
 #include <string>
 
+LV_FONT_DECLARE(notosemi_22_digits);
+LV_FONT_DECLARE(notosemi_16);
+
 SensorContainer::SensorContainer(KWebSocketClient &c,
                                  lv_obj_t *parent,
                                  const void *img,
@@ -33,7 +36,7 @@ SensorContainer::SensorContainer(KWebSocketClient &c,
     lv_obj_clear_flag(sensor_cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_border_color(sensor_cont, color, LV_PART_MAIN);
     lv_obj_set_style_border_side(sensor_cont, LV_BORDER_SIDE_LEFT, LV_PART_MAIN);
-    lv_obj_set_style_border_width(sensor_cont, 5, LV_PART_MAIN);
+    lv_obj_set_style_border_width(sensor_cont, stripe_width(), LV_PART_MAIN);
 
     // auto cont_width = (double)lv_disp_get_physical_hor_res(NULL) * 0.4125;
     // cont_width = cont_width > 330 ? 330 : cont_width;
@@ -137,6 +140,7 @@ SensorContainer::SensorContainer(KWebSocketClient &c,
 }
 
 SensorContainer::~SensorContainer() {
+  numpad.forget(this);
   if (sensor_cont != NULL) {
     spdlog::debug("deleting sensor {}", id);
     lv_obj_del(sensor_cont);
@@ -154,9 +158,18 @@ lv_obj_t *SensorContainer::get_sensor() {
 }
 
 void SensorContainer::update_target(int new_target) {
+#ifdef GUPPY_FF5M
+  if (tile && new_target == target) return;  // no text and colour restyle
+#endif
   if (new_target >= 0) {
     target = new_target;
     lv_label_set_text(target_label, fmt::format("{}", new_target).c_str());
+#ifdef GUPPY_FF5M
+    if (tile) {
+      lv_obj_set_style_text_color(target_label,
+          lv_palette_main(new_target > 0 ? LV_PALETTE_RED : LV_PALETTE_GREY), 0);
+    }
+#endif
   }
 }
 
@@ -167,8 +180,92 @@ void SensorContainer::update_value(int new_value) {
   }
 }
 
+#ifdef GUPPY_FF5M
+const lv_font_t *SensorContainer::temperature_font() {
+  // В сгенерированном шрифте под базовой линией есть место для выносных
+  // элементов, а над цифрами нет: текст, отцентрованный по своему блоку
+  // (значение в рамке, число на кнопке), стоит выше центра. У этой копии
+  // столько же места над цифрами, и строка симметрична относительно них.
+  // Буква, которой в шрифте нет (новый перевод), берётся из шрифта темы.
+  static const lv_font_t font = [] {
+    lv_font_t f = notosemi_22_digits;
+    f.line_height += f.base_line;
+    f.fallback = &notosemi_20;
+    return f;
+  }();
+  return &font;
+}
+
+lv_coord_t SensorContainer::tile_width() {
+  return 84 * ((double)lv_disp_get_physical_hor_res(NULL) / 800.0);
+}
+
+void SensorContainer::set_color(lv_color_t color) {
+  lv_obj_set_style_border_color(sensor_cont, color, LV_PART_MAIN);
+  if (chart != NULL && series != NULL) {
+    lv_chart_set_series_color(chart, series, color);
+  }
+}
+
+void SensorContainer::highlight(bool on) {
+  // Как выбранное сопло на экране Extrude.
+  if (on) {
+    lv_obj_set_style_bg_color(sensor_cont, lv_palette_main(LV_PALETTE_BLUE), 0);
+    lv_obj_set_style_bg_opa(sensor_cont, LV_OPA_COVER, 0);
+  } else {
+    lv_obj_remove_local_style_prop(sensor_cont, LV_STYLE_BG_COLOR, 0);
+    lv_obj_remove_local_style_prop(sensor_cont, LV_STYLE_BG_OPA, 0);
+  }
+}
+
+void SensorContainer::as_tile() {
+  tile = true;
+  auto scale = (double)lv_disp_get_physical_hor_res(NULL) / 800.0;
+  // The colour stripe along the bottom. The border counts on every side of
+  // the content area, not only the drawn one: the content is 74x68, 4 tiles
+  // fill the 356 px temperature column.
+  lv_obj_set_style_border_side(sensor_cont, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+  lv_obj_set_size(sensor_cont, tile_width(), 78 * scale);
+
+  // Top: the icon, the target and the current temperature stacked right of it.
+  lv_img_set_zoom(sensor_img, 128);  // the 64 px icons at 32 px
+  lv_img_set_size_mode(sensor_img, LV_IMG_SIZE_MODE_REAL);  // the zoomed size
+  lv_obj_align(sensor_img, LV_ALIGN_TOP_LEFT, 0, 4 * scale);
+
+  lv_obj_add_flag(divider_label, LV_OBJ_FLAG_HIDDEN);
+  for (lv_obj_t *l : {value_label, target_label}) {
+    lv_obj_set_width(l, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(l, 0, 0);
+    lv_obj_set_style_border_width(l, 0, 0);
+    lv_obj_set_style_text_font(l, temperature_font(), 0);  // bigger than the name
+  }
+  // Ставятся по верху цифр: добавленное над ними место вычитается.
+  lv_coord_t room = temperature_font()->line_height - notosemi_22_digits.line_height;
+  if (lv_obj_has_flag(target_label, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_align(value_label, LV_ALIGN_TOP_RIGHT, 0, 12 * scale - room);
+  } else {
+    lv_obj_align(target_label, LV_ALIGN_TOP_RIGHT, 0, 2 * scale - room);
+    lv_obj_align(value_label, LV_ALIGN_TOP_RIGHT, 0, 24 * scale - room);
+    update_target(target < 0 ? 0 : target);
+  }
+
+  // Bottom: the name, the tile's whole width.
+  lv_label_set_long_mode(sensor_label, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(sensor_label, LV_PCT(100));
+  // 16 px задан явно: шрифт по умолчанию 20 px, и с ним «Extruder» и «Chamber»
+  // не помещаются в плитку.
+  lv_obj_set_style_text_font(sensor_label, &notosemi_16, 0);
+  lv_obj_align(sensor_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+}
+#endif
+
 int SensorContainer::get_target_value() {
   return target;
+}
+
+void SensorContainer::attach_series(lv_obj_t *new_chart, lv_chart_series_t *new_series) {
+  chart = new_chart;
+  series = new_series;
 }
 
 void SensorContainer::update_series(int v) {
@@ -193,6 +290,14 @@ void SensorContainer::handle_edit(lv_event_t *e) {
       }
     });
     numpad.foreground_reset();
+    std::function<void()> on_close;
+#ifdef GUPPY_FF5M
+    if (tile) {  // плитка Home: для какой из них вводится температура
+      highlight(true);
+      on_close = [this] { highlight(false); };
+    }
+#endif
+    numpad.set_close_callback(this, std::move(on_close));  // и для forget() при удалении
   }
 }
 
@@ -203,5 +308,13 @@ void SensorContainer::handle_edit2(lv_event_t *e) {
         update_target(v);
     });
     numpad.foreground_reset();
+    std::function<void()> on_close;
+#ifdef GUPPY_FF5M
+    if (tile) {
+      highlight(true);
+      on_close = [this] { highlight(false); };
+    }
+#endif
+    numpad.set_close_callback(this, std::move(on_close));
   }
 }

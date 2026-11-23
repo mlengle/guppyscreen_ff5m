@@ -1,7 +1,14 @@
 #include "numpad.h"
+#ifdef GUPPY_FF5M
+#include "sensor_container.h"
+#endif
 #include "spdlog/spdlog.h"
 
 #include <string>
+
+#ifdef GUPPY_FF5M
+LV_FONT_DECLARE(notobold_32_numpad);
+#endif
 
 Numpad::Numpad(lv_obj_t *parent)
   : edit_cont(lv_obj_create(parent))
@@ -26,6 +33,9 @@ Numpad::Numpad(lv_obj_t *parent)
 
   lv_obj_set_size(input, LV_PCT(100), LV_SIZE_CONTENT);
   lv_textarea_set_one_line(input, true);
+#ifdef GUPPY_FF5M
+  lv_obj_set_style_text_font(input, SensorContainer::temperature_font(), 0);  // as big as Home's temperatures
+#endif
 
   lv_obj_set_size(kb, LV_PCT(100), LV_PCT(85));
   static const char * kb_map[] = {"1", "2", "3", "\n", "4", "5", "6", "\n", "7", "8", "9", "\n", LV_SYMBOL_BACKSPACE, "0", LV_SYMBOL_OK, NULL };
@@ -33,6 +43,9 @@ Numpad::Numpad(lv_obj_t *parent)
   lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_USER_1, kb_map, kb_ctrl);
 
   lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_USER_1);
+#ifdef GUPPY_FF5M
+  lv_obj_set_style_text_font(kb, &notobold_32_numpad, LV_PART_ITEMS);
+#endif
   lv_keyboard_set_textarea(kb, input);
 
   lv_obj_add_event_cb(input, &Numpad::_handle_input, LV_EVENT_ALL, this);
@@ -75,21 +88,51 @@ void Numpad::handle_input(lv_event_t *e) {
   }
 
   if (code == LV_EVENT_CANCEL) {
-    lv_obj_add_flag(edit_cont, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_background(edit_cont);
+    hide();
   }
 
   if (code == LV_EVENT_READY) {
     // input validation, e.g. range
     std::string value = std::string(lv_textarea_get_text(input));
     if (value.length() > 0) {
-      ready_cb(std::stod(value));
+      try {
+        ready_cb(std::stod(value));
+      } catch (const std::exception &) {
+      }
     }
 
-    lv_obj_add_flag(edit_cont, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_background(edit_cont);
+    hide();
     lv_textarea_set_text(input, "");
   }
+}
+
+void Numpad::set_close_callback(const void *owner, std::function<void()> cb) {
+  close_owner = owner;
+  close_cb = std::move(cb);
+}
+
+void Numpad::forget(const void *owner) {
+  if (owner != close_owner) return;
+  // Its OK would call into it: closed without its callbacks.
+  close_owner = nullptr;
+  close_cb = nullptr;
+  ready_cb = [](double) {};
+  lv_obj_add_flag(edit_cont, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_background(edit_cont);
+}
+
+void Numpad::fire_close() {
+  auto cb = std::move(close_cb);
+  close_cb = nullptr;
+  close_owner = nullptr;
+  if (cb) cb();
+}
+
+void Numpad::hide() {
+  ready_cb = [](double) {};
+  lv_obj_add_flag(edit_cont, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_background(edit_cont);
+  fire_close();
 }
 
 // void Numpad::handle_defocused(lv_event_t *e) {
@@ -105,6 +148,7 @@ void Numpad::handle_input(lv_event_t *e) {
 
 void Numpad::foreground_reset() {
   spdlog::trace("resetting foreground");
+  fire_close();  // the previous caller's numpad is closed
   lv_textarea_set_text(input, "");
   lv_obj_clear_flag(edit_cont, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(edit_cont);

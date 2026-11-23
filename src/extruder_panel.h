@@ -8,7 +8,13 @@
 #include "button_container.h"
 #include "sensor_container.h"
 #include "numpad.h"
+#ifdef GUPPY_FF5M
+#include "nozzle_tiles.h"
+#endif
 #include "lvgl/lvgl.h"
+
+#include <string>
+#include <vector>
 
 class ExtruderPanel : public NotifyConsumer {
  public:
@@ -16,6 +22,7 @@ class ExtruderPanel : public NotifyConsumer {
   ~ExtruderPanel();
 
   void foreground();
+  void set_print_locked(bool printing);
   void enable_spoolman();
   void consume(json &j);
   void handle_callback(lv_event_t *e);
@@ -24,6 +31,17 @@ class ExtruderPanel : public NotifyConsumer {
     ExtruderPanel *panel = (ExtruderPanel*)event->user_data;
     panel->handle_callback(event);
   };
+
+#ifdef GUPPY_FF5M
+  // A tile per nozzle, like Home's without the colour stripe, replaces the
+  // extruder line. With several nozzles (C5 Pro) they also replace the T0-T3
+  // buttons: the printer's tool has a blue background.
+  // На C5 Pro нажатие сразу вызывает _T_USE (кроме печати).
+  // One nozzle (AD5M, AD5X) is not selectable. Called by
+  // MainPanel::create_sensors, under the LVGL lock, with Home's names and
+  // colours and where Home's tiles start in its content area (`left`, `top`).
+  void create_nozzle_tiles(const std::vector<NozzleTiles::Nozzle> &nozzles, lv_coord_t left, lv_coord_t top);
+#endif
 
  private:
   KWebSocketClient &ws;
@@ -44,10 +62,16 @@ class ExtruderPanel : public NotifyConsumer {
   ButtonContainer spoolman_btn;
   ButtonContainer cooldown_btn;
   ButtonContainer coldpull_btn;
-  ButtonContainer back_btn;
   std::string load_filament_macro;
   std::string code_macro;
   std::string cooldown_macro;
+#ifdef GUPPY_FF5M
+  NozzleTiles nozzle_tiles;
+  lv_obj_t *remove_tool_tile = nullptr;
+#endif
+  // Load, Unload and ColdPull: on with a tool in the head; on FF5M with
+  // selectable nozzles (C5 Pro), while one is picked.
+  void enable_actions(bool tool_in_head);
 };
 
 #endif // __EXTRUDER_PANEL_H__

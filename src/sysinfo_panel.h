@@ -4,13 +4,18 @@
 #include "button_container.h"
 #include "lvgl/lvgl.h"
 
+#include <functional>
 #include <vector>
 #include <string>
 #include "websocket_client.h"
 
 class SysInfoPanel {
  public:
-  SysInfoPanel(KWebSocketClient &c);
+  SysInfoPanel(KWebSocketClient &c
+#ifdef GUPPY_FF5M
+               , std::function<void(bool)> clock_changed
+#endif
+               );
   ~SysInfoPanel();
 
   void foreground();
@@ -41,6 +46,13 @@ class SysInfoPanel {
 
   lv_obj_t *estop_toggle_cont;
   lv_obj_t *prompt_estop_toggle;
+  lv_obj_t *exclude_toggle_cont;
+  lv_obj_t *prompt_exclude_toggle;
+#ifdef GUPPY_FF5M
+  lv_obj_t *clock_toggle_cont;
+  lv_obj_t *clock_toggle;
+  std::function<void(bool)> clock_changed;
+#endif
 
 #ifndef GUPPY_FF5M
   lv_obj_t *z_icon_toggle_cont;
@@ -50,7 +62,6 @@ class SysInfoPanel {
   lv_obj_t *theme_dd;
   uint32_t theme;
 #endif
-  ButtonContainer back_btn;
 
   static std::vector<std::string> log_levels;
   static std::vector<std::string> themes;

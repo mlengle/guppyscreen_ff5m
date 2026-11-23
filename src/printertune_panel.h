@@ -4,7 +4,6 @@
 #include "finetune_panel.h"
 #include "limits_panel.h"
 #include "retract_panel.h"
-#include "pro_panel.h"
 #include "pid_panel.h"
 #include "bedmesh_panel.h"
 #include "inputshaper_panel.h"
@@ -21,15 +20,30 @@
 #include <mutex>
 class PrinterTunePanel {
  public:
-  PrinterTunePanel(KWebSocketClient &c, std::mutex &l, lv_obj_t *parent, FineTunePanel &, RetractPanel &, ProPanel &, PidPanel &, PromptPanel &);
+  PrinterTunePanel(KWebSocketClient &c, std::mutex &l, lv_obj_t *parent, FineTunePanel &, RetractPanel &, PidPanel &, PromptPanel &);
   ~PrinterTunePanel();
 
   lv_obj_t *get_container();
   BedMeshPanel &get_bedmesh_panel();
+#ifdef GUPPY_FF5M
+  void show_limits();
+#endif
 #ifndef GUPPY_FF5M
   PowerPanel &get_power_panel();
 #endif
   void init(json &j);
+  void set_print_locked(bool locked) {
+    inputshaper_panel.set_print_locked(locked);
+    belts_calibration_panel.set_print_locked(locked);
+    pid_panel.set_print_locked(locked);
+    bedmesh_panel.set_print_locked(locked);
+#ifdef GUPPY_FF5M
+    ButtonContainer::set_print_locked(locked, {&calibrate_extruders_btn, &calibrate_vfa_btn});
+#endif
+  }
+#ifdef GUPPY_FF5M
+  void show_calibrations(bool extruders, bool vfa);
+#endif
   void handle_callback(lv_event_t *event);
 
   static void _handle_callback(lv_event_t *event) {
@@ -38,13 +52,13 @@ class PrinterTunePanel {
   };
 
  private:
+  KWebSocketClient &ws;
   lv_obj_t *cont;
   BedMeshPanel bedmesh_panel;
   FineTunePanel &finetune_panel;
   LimitsPanel limits_panel;
-  RetractPanel retract_panel;
-  ProPanel pro_panel;
-  PidPanel pid_panel;
+  RetractPanel &retract_panel;  // owned by the print status panel
+  PidPanel &pid_panel;  // owned by the print status panel
   InputShaperPanel inputshaper_panel;
   BeltsCalibrationPanel belts_calibration_panel;
 #ifndef GUPPY_FF5M
@@ -52,14 +66,21 @@ class PrinterTunePanel {
   TmcStatusPanel tmc_status_panel;
   PowerPanel power_panel;
 #endif
+#ifndef GUPPY_FF5M  // on Home on the FF5M
   ButtonContainer finetune_btn;
+#endif
   ButtonContainer limits_btn;
   ButtonContainer retract_btn;
+#ifndef GUPPY_FF5M
   ButtonContainer bedmesh_btn;
+#endif
   ButtonContainer inputshaper_btn;
   ButtonContainer belts_calibration_btn;
-  ButtonContainer pro_btn;
   ButtonContainer pid_btn;
+#ifdef GUPPY_FF5M
+  ButtonContainer calibrate_extruders_btn;
+  ButtonContainer calibrate_vfa_btn;
+#endif
 #ifndef GUPPY_FF5M
   ButtonContainer tmc_tune_btn;
   ButtonContainer tmc_status_btn;

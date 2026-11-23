@@ -4,6 +4,8 @@
 #include "state.h"
 #include "spdlog/spdlog.h"
 #include "platform.h"
+#include "utils.h"
+#include "lvgl/lvgl.h"
 
 #include <cmath>
 #include <time.h>
@@ -61,26 +63,39 @@ namespace KUtils {
 
   std::pair<std::string, size_t> get_thumbnail(const std::string &gcode_file, json &j, double scale) {
     auto &thumbs = j["/result/thumbnails"_json_pointer];
-    if (!thumbs.is_null() && !thumbs.empty()) {
+    if (thumbs.is_array() && !thumbs.empty()) {
       // assume square, look for closest to 300x300
       auto scaled_width = scale * 300;
       spdlog::debug("using thumb at scaled width {}", scaled_width);
+      // The closest one with a width and a file path: callers scale the image by
+      // dividing by the width. A thumbnail without them (a slicer's or a
+      // metadata parser's) doesn't count instead of throwing.
       uint32_t closest_index = 0;
-      size_t thumb_width = 0;
-      auto width = thumbs.at(0)["width"].is_number()
-        ? thumbs.at(0)["width"].template get<int>()
-        : std::stoi(thumbs.at(0)["width"].template get<std::string>());
-      int closest = std::abs(scaled_width - width);
+      int thumb_width = 0;
+      int closest = 0;
       for (int i = 0; i < thumbs.size(); i++) {
-        width = thumbs.at(i)["width"].is_number()
-          ? thumbs.at(i)["width"].template get<int>()
-          : std::stoi(thumbs.at(i)["width"].template get<std::string>());
+        const json &t = thumbs.at(i);
+        if (!t.is_object() || !t.contains("relative_path") || !t["relative_path"].is_string()) {
+          continue;
+        }
+        const std::string &path = t["relative_path"].get_ref<const std::string &>();
+        if (path.empty() || path.back() == '/' || path.back() == '\\') {
+          continue;  // no file name: it would show the thumbnail directory
+        }
+        const json &w = t.contains("width") ? t["width"] : json();
+        int width = w.is_number() ? w.template get<int>()
+          : w.is_string() ? std::atoi(w.template get<std::string>().c_str())
+          : 0;
         int cur_diff = std::abs(scaled_width - width);
-        if (cur_diff < closest) {
+        if (width > 0 && (thumb_width == 0 || cur_diff < closest)) {
           closest = cur_diff;
           closest_index = i;
           thumb_width = width;
         }
+      }
+      if (thumb_width <= 0) {
+        spdlog::warn("no thumbnail of {} has a width, not showing any", gcode_file);
+        return std::make_pair("", 0);
       }
 
       auto &thumb = thumbs.at(closest_index);
@@ -165,14 +180,21 @@ namespace KUtils {
 
   std::string interface_ip(const std::string &interface) {
     int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (fd < 0) {
+      return "";
+    }
 
     struct ifreq ifr{};
-    strcpy(ifr.ifr_name, interface.c_str());
-    ioctl(fd, SIOCGIFADDR, &ifr);
+    strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ - 1);
+    int rc = ioctl(fd, SIOCGIFADDR, &ifr);
     close(fd);
+    if (rc < 0) {
+      return "";
+    }
 
     char ip[INET_ADDRSTRLEN];
-    strcpy(ip, inet_ntoa(((sockaddr_in *) &ifr.ifr_addr)->sin_addr));
+    strncpy(ip, inet_ntoa(((sockaddr_in *) &ifr.ifr_addr)->sin_addr), sizeof(ip) - 1);
+    ip[sizeof(ip) - 1] = 0;
     return ip;
   }
 
@@ -248,15 +270,15 @@ std::string end_time(int64_t seconds_to_add) {
     std::ostringstream os;
 
     if (p.tm_yday > 0)
-      os << p.tm_yday << _("д ");
+      os << p.tm_yday << _("d ");
 
     if (p.tm_hour > 0)
-      os << p.tm_hour << _("ч ");
+      os << p.tm_hour << _("h ");
 
     if (p.tm_min > 0)
-      os << p.tm_min << _("м ");
+      os << p.tm_min << _("min ");
 
-    os << p.tm_sec << _("с");
+    os << p.tm_sec << _("s");
 
     return os.str();
   }
@@ -265,7 +287,7 @@ std::string end_time(int64_t seconds_to_add) {
     return s / 1024 / 1024;
   }
 
-  std::map<std::string, std::map<std::string, std::string>> parse_macros(json &m) {
+  std::map<std::string, std::map<std::string, std::string>> parse_macros(const json &m) {
     std::map<std::string, std::map<std::string, std::string>> macros;
 
     std::regex param_regex(R"(params\.(\w+)(.*))", std::regex_constants::icase);
@@ -274,8 +296,9 @@ std::string end_time(int64_t seconds_to_add) {
     for (auto &el : m.items()) {
       std::string key = el.key();
       if (key.rfind("gcode_macro ", 0) == 0) {
-        auto &gcode = el.value()["/gcode"_json_pointer];
-        if (!gcode.is_null()) {
+        if (el.value().is_object() && el.value().contains("gcode")
+            && el.value().at("gcode").is_string()) {
+          const auto &gcode = el.value().at("gcode");
           auto macro_split = split(el.key(), ' ');
           if (macro_split.size() > 1 && macro_split[1].rfind("_", 0) != 0) {
             std::string macro_name = macro_split[1];
@@ -309,4 +332,65 @@ std::string end_time(int64_t seconds_to_add) {
 
     return macros;
   }
+
+  static std::string file_src(lv_obj_t *img) {
+    const void *src = lv_img_get_src(img);
+    if (src != NULL && lv_img_src_get_type(src) == LV_IMG_SRC_FILE) {
+      return (const char *)src;
+    }
+    return "";
+  }
+
+  void set_label_text(lv_obj_t *label, const char *text) {
+    if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
+  }
+
+  void set_img_src(lv_obj_t *img, const void *src) {
+    std::string old = file_src(img);
+    lv_img_set_src(img, src);
+    if (src == NULL) {
+      // Без источника LVGL рисует белый прямоугольник «No data».
+      ((lv_img_t *)img)->src_type = LV_IMG_SRC_SYMBOL;
+    }
+    if (!old.empty()) {
+      lv_img_cache_invalidate_src(old.c_str());
+    }
+  }
+
+  void uncache_img(lv_obj_t *img) {
+    std::string src = file_src(img);
+    if (!src.empty()) {
+      lv_img_cache_invalidate_src(src.c_str());
+    }
+  }
   }  // namespace KUtils
+
+namespace {
+void spinner_start_angle(void *obj, int32_t v) { lv_arc_set_start_angle((lv_obj_t *)obj, (uint16_t)v); }
+void spinner_end_angle(void *obj, int32_t v) { lv_arc_set_end_angle((lv_obj_t *)obj, (uint16_t)v); }
+}  // namespace
+
+// The same two animations as lv_spinner's constructor (lv_spinner.c).
+void KUtils::spinner_show(lv_obj_t *spinner, uint32_t time_ms, uint16_t arc_len) {
+  lv_anim_del(spinner, NULL);
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, spinner);
+  lv_anim_set_exec_cb(&a, spinner_end_angle);
+  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_set_time(&a, time_ms);
+  lv_anim_set_values(&a, arc_len, 360 + arc_len);
+  lv_anim_start(&a);
+
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+  lv_anim_set_values(&a, 0, 360);
+  lv_anim_set_exec_cb(&a, spinner_start_angle);
+  lv_anim_start(&a);
+
+  lv_obj_clear_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+}
+
+void KUtils::spinner_hide(lv_obj_t *spinner) {
+  lv_anim_del(spinner, NULL);
+  lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+}

@@ -17,7 +17,9 @@
 #endif
 #include "spdlog/spdlog.h"
 #include "state.h"
+#include "nav.h"
 #include "theme.h"
+#include <time.h>
 #include <experimental/filesystem>
 namespace fs = std::experimental::filesystem;
 
@@ -43,6 +45,7 @@ GuppyScreen::GuppyScreen()
   , init_panel(main_panel, main_panel.get_tune_panel().get_bedmesh_panel(), lv_lock)
 {
   main_panel.create_panel();
+  Nav::get().start();
 }
 
 GuppyScreen *GuppyScreen::get() {
@@ -234,7 +237,7 @@ void GuppyScreen::loop() {
 
   while (1) {
     lv_lock.lock();
-    lv_timer_handler();
+    uint32_t idle_ms = lv_timer_handler();  // until the next LVGL timer is due
     lv_lock.unlock();
 
     lv_lock_update.lock();
@@ -262,7 +265,13 @@ void GuppyScreen::loop() {
     }
 #endif  // SIMULATOR/OS_ANDROID
 
-    usleep(5000);
+    // Sleep until the next LVGL timer is due instead of a fixed 5 ms: the
+    // display refresh and the touch read run every LV_DISP_DEF_REFR_PERIOD /
+    // LV_INDEV_DEF_READ_PERIOD (30 ms), so this wakes ~33 times a second
+    // instead of 200, with the same redraw and touch latency. Timers that
+    // other threads add (lv_async_call) wait at most that long.
+    if (idle_ms > LV_DISP_DEF_REFR_PERIOD) idle_ms = LV_DISP_DEF_REFR_PERIOD;  // also LV_NO_TIMER_READY
+    usleep(idle_ms * 1000);
   }
 }
 
@@ -272,7 +281,7 @@ std::mutex &GuppyScreen::get_lock() {
 
 void GuppyScreen::connect_ws(const std::string &url) {
   up(true);
-  init_panel.set_message(_(LV_SYMBOL_WARNING" Waiting for the Klipper launch..."));
+  init_panel.set_message((LV_SYMBOL_WARNING + std::string(_(" Waiting for the Klipper launch..."))).c_str());
   ws.connect(url.c_str(),
    [this]() { init_panel.connected(ws); },
    [this]() { init_panel.disconnected(ws); });
@@ -327,18 +336,12 @@ void GuppyScreen::refresh_theme() {
 
 /*Set in lv_conf.h as `LV_TICK_CUSTOM_SYS_TIME_EXPR`*/
 uint32_t custom_tick_get(void) {
-  static uint64_t start_ms = 0;
-  if (start_ms == 0) {
-    struct timeval tv_start;
-    gettimeofday(&tv_start, NULL);
-    start_ms = (tv_start.tv_sec * 1000000 + tv_start.tv_usec) / 1000;
-  }
-
-  struct timeval tv_now;
-  gettimeofday(&tv_now, NULL);
-  uint64_t now_ms;
-  now_ms = (tv_now.tv_sec * 1000000 + tv_now.tv_usec) / 1000;
-
-  uint32_t time_ms = now_ms - start_ms;
-  return time_ms;
+  // LVGL needs elapsed time, unaffected by wall-clock corrections. Cast
+  // before multiplication: time_t can be 32-bit on the MIPS target.
+  struct timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const uint64_t ms = static_cast<uint64_t>(ts.tv_sec) * 1000
+                    + static_cast<uint64_t>(ts.tv_nsec) / 1000000;
+  // LVGL handles the normal uint32_t millisecond wrap-around.
+  return static_cast<uint32_t>(ms);
 }

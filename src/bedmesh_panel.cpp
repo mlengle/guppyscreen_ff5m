@@ -1,4 +1,6 @@
 #include "bedmesh_panel.h"
+#include "config.h"
+#include "nav.h"
 #include "state.h"
 #include "spdlog/spdlog.h"
 
@@ -7,7 +9,6 @@
 #include <algorithm>
 #include <string>
 
-LV_IMG_DECLARE(back);
 LV_IMG_DECLARE(delete_img);
 LV_IMG_DECLARE(auto_img);
 LV_IMG_DECLARE(bedmesh_img);
@@ -24,19 +25,27 @@ uint16_t selected_col = LV_TABLE_CELL_NONE;
 BedMeshPanel::BedMeshPanel(KWebSocketClient &c, std::mutex &l)
   : NotifyConsumer(l)
   , ws(c)
-  , cont(lv_obj_create(lv_scr_act()))
-  , prompt(lv_obj_create(lv_scr_act()))
+  , cont(lv_obj_create(Nav::get().content()))
+  , prompt(lv_obj_create(Nav::get().content()))
   , top_cont(lv_obj_create(cont))
   , mesh_table(lv_table_create(top_cont))
   , profile_cont(lv_table_create(top_cont))
   , profile_table(lv_table_create(profile_cont))
   , profile_info(lv_table_create(profile_cont))
+  , screws_cont(lv_obj_create(top_cont))
+  , screw_nozzle_label(lv_label_create(screws_cont))
+  , screw_nozzle_btn(lv_btn_create(screws_cont))
+  , screw_nozzle_value(lv_label_create(screw_nozzle_btn))
+  , screw_bed_label(lv_label_create(screws_cont))
+  , screw_bed_btn(lv_btn_create(screws_cont))
+  , screw_bed_value(lv_label_create(screw_bed_btn))
+  , screw_adjust_btn(lv_btn_create(screws_cont))
+  , screws_numpad(Nav::get().content())
   , controls_cont(lv_obj_create(cont))
   , save_btn(controls_cont, &sd_img, _("Save") /* "Сохранить" */, &BedMeshPanel::_handle_callback, this)
   , clear_btn(controls_cont, &delete_img, _("Clean") /* "Очистить" */, &BedMeshPanel::_handle_callback, this)
   , auto_btn(controls_cont, &auto_img, _("Calibrate") /* "Калибровка" */, &BedMeshPanel::_handle_callback, this)
   , calibrate_btn(controls_cont, &bedmesh_img, _("Cold") /* "Холодн" */, &BedMeshPanel::_handle_callback, this)
-  , back_btn(controls_cont, &back, _("Back") /* "Назад" */, &BedMeshPanel::_handle_callback, this)
   , msgbox(lv_obj_create(prompt))
   , input(lv_textarea_create(msgbox))
   , kb(lv_keyboard_create(prompt))
@@ -59,7 +68,7 @@ BedMeshPanel::BedMeshPanel(KWebSocketClient &c, std::mutex &l)
   lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_grow(top_cont, 1);
 
-  lv_obj_set_flex_align(top_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_flex_align(top_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_width(top_cont, LV_PCT(100));
   lv_obj_clear_flag(top_cont, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(top_cont, LV_FLEX_FLOW_ROW);
@@ -74,6 +83,7 @@ BedMeshPanel::BedMeshPanel(KWebSocketClient &c, std::mutex &l)
   auto hscale = (double)lv_disp_get_physical_ver_res(NULL) / 480.0;
 
   lv_obj_set_size(profile_cont, LV_PCT(50), 340 * hscale);
+  lv_obj_set_style_translate_x(profile_cont, 4 * scale, 0);
   lv_obj_set_style_pad_all(profile_cont, 0, 0);
   lv_obj_set_style_border_width(profile_cont, 0, 0);
   lv_obj_clear_flag(profile_cont, LV_OBJ_FLAG_SCROLLABLE);
@@ -84,6 +94,7 @@ BedMeshPanel::BedMeshPanel(KWebSocketClient &c, std::mutex &l)
   lv_table_set_col_width(profile_table, 1, 50 * scale);
   lv_table_set_col_width(profile_table, 2, 50 * scale);
   lv_obj_set_height(profile_table, 200 * hscale);
+  lv_obj_set_style_opa(profile_table, LV_OPA_50, LV_STATE_DISABLED);
 
   // profile info
   lv_table_set_col_width(profile_info, 0, 240 * scale);
@@ -92,6 +103,42 @@ BedMeshPanel::BedMeshPanel(KWebSocketClient &c, std::mutex &l)
   lv_obj_set_style_pad_top(profile_info, 5, LV_PART_ITEMS | LV_STATE_DEFAULT);
   lv_obj_set_style_pad_bottom(profile_info, 5, LV_PART_ITEMS | LV_STATE_DEFAULT);
   lv_obj_set_style_border_side(profile_info, LV_BORDER_SIDE_BOTTOM, 0);
+
+  lv_obj_add_flag(screws_cont, LV_OBJ_FLAG_FLOATING);
+  lv_obj_set_size(screws_cont, 320 * scale, 120 * hscale);
+  lv_obj_align(screws_cont, LV_ALIGN_TOP_LEFT, 390 * scale, 255 * hscale);
+  lv_obj_set_style_pad_all(screws_cont, 0, 0);
+  lv_obj_set_style_border_width(screws_cont, 0, 0);
+  lv_obj_set_style_bg_opa(screws_cont, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(screws_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_label_set_text(screw_nozzle_label, _("Extruder") /* "Экструдер" */);
+  lv_obj_align(screw_nozzle_label, LV_ALIGN_TOP_LEFT, 12 * scale, 8 * hscale);
+  lv_label_set_text(screw_bed_label, _("Bed") /* "Стол" */);
+  lv_obj_align(screw_bed_label, LV_ALIGN_TOP_LEFT, 12 * scale, 48 * hscale);
+
+  for (lv_obj_t *obj : {screw_nozzle_btn, screw_bed_btn}) {
+    lv_obj_set_size(obj, 110 * scale, 36 * hscale);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(0x393D43), 0);
+    lv_obj_set_style_radius(obj, 6, 0);
+    lv_obj_add_event_cb(obj, &BedMeshPanel::_handle_callback, LV_EVENT_SHORT_CLICKED, this);
+  }
+  lv_obj_align(screw_nozzle_btn, LV_ALIGN_TOP_RIGHT, -12 * scale, 0);
+  lv_obj_align(screw_bed_btn, LV_ALIGN_TOP_RIGHT, -12 * scale, 40 * hscale);
+  lv_label_set_text(screw_nozzle_value, fmt::format("{} °C", Config::get_instance()->get<int>("/screw_nozzle_temp")).c_str());
+  lv_label_set_text(screw_bed_value, fmt::format("{} °C", Config::get_instance()->get<int>("/screw_bed_temp")).c_str());
+  lv_obj_center(screw_nozzle_value);
+  lv_obj_center(screw_bed_value);
+
+  lv_obj_set_size(screw_adjust_btn, 300 * scale, 34 * hscale);
+  lv_obj_align(screw_adjust_btn, LV_ALIGN_TOP_MID, 0, 82 * hscale);
+  lv_obj_set_style_bg_color(screw_adjust_btn, lv_color_hex(0x45494F), 0);
+  lv_obj_set_style_bg_color(screw_adjust_btn, lv_color_hex(0x555B62), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(screw_adjust_btn, 6, 0);
+  lv_obj_t *adjust_label = lv_label_create(screw_adjust_btn);
+  lv_label_set_text(adjust_label, _("Screw adjustment") /* "Регулировка винтов" */);
+  lv_obj_center(adjust_label);
+  lv_obj_add_event_cb(screw_adjust_btn, &BedMeshPanel::_handle_callback, LV_EVENT_SHORT_CLICKED, this);
 
   // button controls
   lv_obj_set_width(controls_cont, LV_PCT(100));
@@ -131,8 +178,8 @@ BedMeshPanel::BedMeshPanel(KWebSocketClient &c, std::mutex &l)
   lv_obj_set_width(label, LV_PCT(100));
   lv_label_set_text(label, _("Saving the profile will restart the printer.") /* "Сохранение профиля перезапустит принтер." */);
 
-  lv_obj_t *prompt_save_btn = lv_btn_create(msgbox);
   lv_obj_t *prompt_cancel_btn = lv_btn_create(msgbox);
+  lv_obj_t *prompt_save_btn = lv_btn_create(msgbox);
 
   label = lv_label_create(prompt_save_btn);
   lv_label_set_text(label, _("Save") /* "Сохранить" */);
@@ -149,6 +196,7 @@ BedMeshPanel::BedMeshPanel(KWebSocketClient &c, std::mutex &l)
   lv_keyboard_set_textarea(kb, input);
 
   lv_obj_move_background(prompt);
+  Nav::get().add_dialog(prompt);  // stays on top of a tab switch, blocks the tabs
 
   ws.register_notify_update(this);
 }
@@ -197,6 +245,7 @@ void BedMeshPanel::getCoordinates(int row, int col) {
 
 
 void BedMeshPanel::table_event_cb(lv_event_t* e) {
+    if (State::print_pause_active()) return;
     lv_obj_t* obj = lv_event_get_target(e); // Получаем объект, который вызвал событие
     lv_event_code_t code = lv_event_get_code(e); // Получаем код события
 
@@ -410,15 +459,35 @@ void BedMeshPanel::refresh_profile_info(std::string profile) {
   }
 }
 
+void BedMeshPanel::show_screw_nozzle_temp(bool show) {
+  const double scale = (double)lv_disp_get_physical_hor_res(NULL) / 800.0;
+  const double hscale = (double)lv_disp_get_physical_ver_res(NULL) / 480.0;
+  if (show) {
+    lv_obj_clear_flag(screw_nozzle_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(screw_nozzle_btn, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(screw_nozzle_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(screw_nozzle_btn, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_set_size(screws_cont, 320 * scale, (show ? 120 : 90) * hscale);
+  lv_obj_align(screws_cont, LV_ALIGN_TOP_LEFT, 390 * scale, (show ? 255 : 270) * hscale);
+  lv_obj_align(screw_bed_label, LV_ALIGN_TOP_LEFT, 12 * scale, (show ? 48 : 8) * hscale);
+  lv_obj_align(screw_bed_btn, LV_ALIGN_TOP_RIGHT, -12 * scale, (show ? 40 : 0) * hscale);
+  lv_obj_align(screw_adjust_btn, LV_ALIGN_TOP_MID, 0, (show ? 82 : 44) * hscale);
+}
+
 void BedMeshPanel::foreground() {
   auto bm = State::get_instance()->get_data("/printer_state/bed_mesh"_json_pointer);
   spdlog::trace("bm {}", bm.dump());
   refresh_views(bm);
 
+  lv_label_set_text(screw_nozzle_value, fmt::format("{} °C", Config::get_instance()->get<int>("/screw_nozzle_temp")).c_str());
+  lv_label_set_text(screw_bed_value, fmt::format("{} °C", Config::get_instance()->get<int>("/screw_bed_temp")).c_str());
   lv_obj_move_foreground(cont);
 }
 
 void BedMeshPanel::handle_callback(lv_event_t *event) {
+  if (State::print_pause_active()) return;
   lv_obj_t *btn = lv_event_get_current_target(event);
   if (btn == save_btn.get_container()) {
     spdlog::trace("mesh save pressed");
@@ -450,27 +519,43 @@ void BedMeshPanel::handle_callback(lv_event_t *event) {
     }
     ws.gcode_script("G28\nBED_MESH_CALIBRATE");
     calibrate_btn.enable();
+  } else if (btn == screw_nozzle_btn || btn == screw_bed_btn) {
+    const bool nozzle = btn == screw_nozzle_btn;
+    screws_numpad.set_callback([this, nozzle](double value) {
+      if (State::print_pause_active() || !std::isfinite(value) || value < 0 || value > (nozzle ? 350 : 150)) return;
+      int temp = static_cast<int>(std::lround(value));
+      Config *conf = Config::get_instance();
+      conf->set(nozzle ? "/screw_nozzle_temp" : "/screw_bed_temp", temp);
+      conf->save();
+      lv_label_set_text(nozzle ? screw_nozzle_value : screw_bed_value, fmt::format("{} °C", temp).c_str());
+    });
+    screws_numpad.foreground_reset();
+  } else if (btn == screw_adjust_btn) {
+    ws.gcode_script(fmt::format("BED_LEVEL_SCREWS_TUNE EXTRUDER_TEMP={} BED_TEMP={}",
+      Config::get_instance()->get<int>("/screw_nozzle_temp"),
+      Config::get_instance()->get<int>("/screw_bed_temp")));
   } else if (btn == auto_btn.get_container()) {
     auto_btn.disable();
     spdlog::trace("auto mesh calibrate pressed");
+    Config *conf = Config::get_instance();
+    const auto command = fmt::format("AUTO_FULL_BED_LEVEL EXTRUDER_TEMP={} BED_TEMP={}",
+      conf->get<int>("/screw_nozzle_temp"), conf->get<int>("/screw_bed_temp"));
     auto v = State::get_instance()
       ->get_data("/printer_state/toolhead/homed_axes"_json_pointer);
     if (!v.is_null()) {
       if (v.template get<std::string>() == "xy") {
-        ws.gcode_script("AUTO_FULL_BED_LEVEL");
+        ws.gcode_script(command);
         auto_btn.enable();
         return;
       }
     }
-    ws.gcode_script("G28\nAUTO_FULL_BED_LEVEL");
+    ws.gcode_script("G28\n" + command);
     auto_btn.enable();
-  } else if (btn == back_btn.get_container()) {
-    spdlog::trace("back button pressed");
-    lv_obj_move_background(cont);
   }
 }
 
 void BedMeshPanel::handle_profile_action(lv_event_t *e) {
+  if (State::print_pause_active()) return;
   lv_event_code_t code = lv_event_get_code(e);
   if(code == LV_EVENT_VALUE_CHANGED) {
     uint16_t row;
@@ -502,6 +587,7 @@ void BedMeshPanel::handle_profile_action(lv_event_t *e) {
 }
 
 void BedMeshPanel::handle_prompt_save(lv_event_t *e) {
+  if (State::print_pause_active()) return;
   lv_event_code_t code = lv_event_get_code(e);
   if(code == LV_EVENT_SHORT_CLICKED) {
     const char *profile_name = lv_textarea_get_text(input);
@@ -528,6 +614,7 @@ void BedMeshPanel::handle_prompt_cancel(lv_event_t *e) {
 
 void BedMeshPanel::handle_kb_input(lv_event_t *e)
 {
+  if (State::print_pause_active()) return;
   const lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_READY) {
     const char *profile_name = lv_textarea_get_text(input);

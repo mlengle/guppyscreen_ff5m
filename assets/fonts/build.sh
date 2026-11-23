@@ -19,4 +19,20 @@ OPTS="--bpp 3 --size $SIZE --lcd \
 
 docker run --rm -v "$PWD:/work" -w /work lv_font_conv $OPTS
 
+# Цифры и кнопки удаления/подтверждения для Numpad, 32 px.
+OPTS="--bpp 3 --size 32 --lcd \
+--font NotoSans-Bold.ttf --range 48-57 \
+--font FontAwesome5-Solid+Brands+Regular.woff --range 61452,62810 \
+--lv-fallback notosemi_16 --format lvgl -o notobold_32_numpad.c"
+
+docker run --rm -v "$PWD:/work" -w /work lv_font_conv $OPTS
+
+# Температуры на Home, поле ввода Numpad, значения и полоса прогресса экрана
+# печати, 22 px: цифры, единицы всех языков и буквы "ETA: {}".
+OPTS="--bpp 3 --size 22 --lcd \
+--font NotoSans-SemiBold.ttf --range 32,37,44-58,65,69,83,84,97,100,101,103-105,109,110,114,115,252,1054,1072,1076,1083,1084,1086,1089,1090,1095,1100 \
+--lv-fallback notosemi_20 --format lvgl -o notosemi_22_digits.c"
+
+docker run --rm -v "$PWD:/work" -w /work lv_font_conv $OPTS
+
 mv -f *.c ../

@@ -24,12 +24,23 @@ WARNINGS		:= -Wall -Wextra -Wno-unused-function -Wno-error=strict-prototypes -Wp
 					-Wunreachable-code -Wno-switch-default -Wreturn-type -Wmultichar -Wformat-security -Wno-sign-compare
 CFLAGS 			?= -O3 -g0 -MD -MP -I$(LVGL_DIR)/ $(WARNINGS)
 ifndef FF5M
-LDFLAGS 		?= -lm -Llibhv/lib -Lspdlog/build -l:libhv.a -latomic -lpthread -lstdc++fs -l:libspdlog.a 
+LDFLAGS 		?=
 else
 CFLAGS 			?= -O3 -g0 -MD -MP -I$(LVGL_DIR)/ $(WARNINGS) --sysroot=$(SYSROOT)
-FF5M_CMAKE_FLAGS ?= -DCMAKE_C_COMPILER=$(CC) -DCMAKE_CXX_COMPILER=$(CXX)
-LDFLAGS 		?= --sysroot=$(SYSROOT) -lm -Llibhv/lib -Lspdlog/build -l:libhv.a -latomic -lpthread  -lstdc++fs -l:libspdlog.a -lts
+LDFLAGS 		?= --sysroot=$(SYSROOT)
 endif
+FF5M_CMAKE_FLAGS ?= -DCMAKE_CXX_COMPILER=$(CXX)
+override CFLAGS += -O3 -g0 -MD -MP
+override LDFLAGS += -lm -Llibhv/lib -Lspdlog/build -l:libhv.a -latomic -lpthread -lstdc++fs -l:libspdlog.a
+ifneq ($(strip $(FF5M)$(GUPPY_FF5M_SCREEN)),)
+override LDFLAGS += -lts
+endif
+# Let the linker drop functions and data nothing references (unused icons,
+# LVGL parts, inline code). Nearly the whole binary stays resident on the
+# printer, so this is RAM, too.
+override CFLAGS += -ffunction-sections -fdata-sections
+override LDFLAGS += -Wl,--gc-sections
+
 BIN 			= guppyscreen
 BUILD_DIR 		= ./build
 BUILD_OBJ_DIR 	= $(BUILD_DIR)/obj
@@ -45,6 +56,10 @@ MAINSRC = 		$(filter-out $(LVGL_DIR)/src/kd_graphic_mode.cpp, $(wildcard $(LVGL_
 include $(LVGL_DIR)/lvgl/lvgl.mk
 include $(LVGL_DIR)/lv_drivers/lv_drivers.mk
 
+# lvgl.mk also lists LVGL's demos and examples (their image data alone is
+# ~70 kB); the app uses none of them.
+CSRCS 			:= $(filter-out $(LVGL_DIR)/$(LVGL_DIR_NAME)/demos/% $(LVGL_DIR)/$(LVGL_DIR_NAME)/examples/%, $(CSRCS))
+
 CSRCS 			+= $(wildcard $(LVGL_DIR)/assets/*.c)
 CSRCS			+= $(wildcard $(LVGL_DIR)/lv_touch_calibration/*.c)
 
@@ -57,6 +72,11 @@ endif
 ifdef FF5M
 ASSET_DIR		= material
 DEFINES 		+= -D GUPPY_FF5M
+endif
+
+ifdef GUPPY_FF5M_SCREEN
+ASSET_DIR		= material
+DEFINES 		+= -D GUPPY_FF5M -D GUPPY_SMALL_SCREEN
 endif
 
 
@@ -87,7 +107,7 @@ DEPS                    = $(addprefix $(BUILD_OBJ_DIR)/, $(patsubst %.o, %.d, $(
 OBJS 			= $(AOBJS) $(COBJS) $(MAINOBJ)
 TARGET 			= $(addprefix $(BUILD_OBJ_DIR)/, $(patsubst ./%, %, $(OBJS)))
 
-INC 				:= -I./ -I./lvgl/ -I./lv_touch_calibration -I./spdlog/include -Ilibhv/include
+INC 				:= -I./ -I./lvgl/ -I./lv_touch_calibration -isystem ./spdlog/include -Ilibhv/include
 LDLIBS	 			:= -lm
 
 DEFINES				+= -D _GNU_SOURCE -DSPDLOG_COMPILED_LIB
@@ -103,7 +123,7 @@ LDLIBS += -lSDL2
 endif
 
 COMPILE_CC				= $(CC) $(CFLAGS) $(INC) $(DEFINES)
-COMPILE_CXX				= $(CC) $(CFLAGS) $(INC) $(DEFINES)
+COMPILE_CXX				= $(CXX) $(CFLAGS) $(INC) $(DEFINES) -Wno-psabi
 
 ## MAINOBJ -> OBJFILES
 
@@ -114,7 +134,7 @@ libhv.a:
 
 libspdlog.a:
 	@mkdir -p $(SPDLOG_DIR)/build
-	@cmake $(FF5M_CMAKE_FLAGS) -B $(SPDLOG_DIR)/build -S $(SPDLOG_DIR)/
+	@cmake $(filter-out -DCMAKE_C_COMPILER=%,$(FF5M_CMAKE_FLAGS)) -B $(SPDLOG_DIR)/build -S $(SPDLOG_DIR)/
 	$(MAKE) -C $(SPDLOG_DIR)/build -j$(nproc)
 
 $(BUILD_OBJ_DIR)/%.o: %.cpp
@@ -153,6 +173,11 @@ clean:
 	rm -rf releases/
 
 cleanall: clean libhvclean spdlogclean
+
+# Integration tests on the host (PC); see tests/Makefile and docs/testing.md.
+.PHONY: test
+test:
+	@$(MAKE) --no-print-directory -j$$(nproc) -f tests/Makefile run
 
 install:
 	install -d $(DESTDIR)$(bindir)

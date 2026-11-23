@@ -1,6 +1,7 @@
 #include "button_container.h"
 #include "config.h"
 #include "spdlog/spdlog.h"
+#include <libintl.h>
 
 ButtonContainer::ButtonContainer(lv_obj_t *parent,
                                  const void *btn_img,
@@ -29,9 +30,7 @@ ButtonContainer::ButtonContainer(lv_obj_t *parent,
   lv_obj_add_flag(btn, LV_OBJ_FLAG_EVENT_BUBBLE);
   // lv_obj_add_flag(btn_cont, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-  Config *conf = Config::get_instance();
-  auto estop = conf->get_json("/prompt_emergency_stop");
-  auto prompt_estop = estop.is_null() ? false : estop.template get<bool>();
+  bool prompt_estop = prompt_emergency_stop();
 
   if (cb != NULL && !pcb) {
     lv_obj_add_event_cb(btn_cont, &ButtonContainer::_handle_callback, LV_EVENT_PRESSED, this);
@@ -76,17 +75,29 @@ lv_obj_t *ButtonContainer::get_button() {
   return btn;
 }
 
-void ButtonContainer::disable() {
-  lv_obj_add_state(btn, LV_STATE_DISABLED);
-  lv_obj_add_state(btn_cont, LV_STATE_DISABLED);
-  lv_obj_add_state(label, LV_STATE_DISABLED);
+void ButtonContainer::refresh_enabled() {
+  for (lv_obj_t *obj : {btn, btn_cont, label}) {
+    if (enabled && !print_locked) lv_obj_clear_state(obj, LV_STATE_DISABLED);
+    else lv_obj_add_state(obj, LV_STATE_DISABLED);
+  }
+}
 
+void ButtonContainer::disable() {
+  enabled = false;
+  refresh_enabled();
 }
 
 void ButtonContainer::enable() {
-  lv_obj_clear_state(btn, LV_STATE_DISABLED);
-  lv_obj_clear_state(btn_cont, LV_STATE_DISABLED);
-  lv_obj_clear_state(label, LV_STATE_DISABLED);
+  enabled = true;
+  refresh_enabled();
+}
+
+void ButtonContainer::set_print_locked(bool locked, std::initializer_list<ButtonContainer *> buttons) {
+  for (auto *b : buttons) {
+    if (b->print_locked == locked) continue;
+    b->print_locked = locked;
+    b->refresh_enabled();
+  }
 }
 
 void ButtonContainer::hide() {
@@ -107,9 +118,18 @@ void ButtonContainer::handle_callback(lv_event_t *e) {
 }
 
 void ButtonContainer::handle_prompt() {
-  static const char * btns[] = {"Ok", "Cancel", ""};
+  confirm(prompt_text, [this]() { run_callback(); });
+}
 
-  lv_obj_t *mbox1 = lv_msgbox_create(NULL, NULL, prompt_text.c_str(), btns, false);
+bool ButtonContainer::prompt_emergency_stop() {
+  auto estop = Config::get_instance()->get_json("/prompt_emergency_stop");
+  return !estop.is_null() && estop.template get<bool>();
+}
+
+void ButtonContainer::confirm(const std::string &text, std::function<void()> on_ok) {
+  static const char * btns[] = {gettext("Cancel"), "OK", ""};
+
+  lv_obj_t *mbox1 = lv_msgbox_create(NULL, NULL, text.c_str(), btns, false);
   lv_obj_t *msg = ((lv_msgbox_t*)mbox1)->text;
   lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(msg, LV_PCT(100));
@@ -126,16 +146,21 @@ void ButtonContainer::handle_prompt() {
   lv_obj_set_size(btnm, LV_PCT(90), 50 *hscale);
   lv_obj_set_size(mbox1, LV_PCT(50), LV_PCT(35));
 
+  // The msgbox owns the callback: freed when it is deleted (closed).
+  auto *cb = new std::function<void()>(std::move(on_ok));
   lv_obj_add_event_cb(mbox1, [](lv_event_t *e) {
     lv_obj_t *obj = lv_obj_get_parent(lv_event_get_target(e));
     uint32_t clicked_btn = lv_msgbox_get_active_btn(obj);
-    if(clicked_btn == 0) {
-      ((ButtonContainer*)e->user_data)->run_callback();
+    if(clicked_btn == 1) {
+      (*(std::function<void()> *)e->user_data)();
     }
 
     lv_msgbox_close(obj);
 
-  }, LV_EVENT_VALUE_CHANGED, this);
+  }, LV_EVENT_VALUE_CHANGED, cb);
+  lv_obj_add_event_cb(mbox1, [](lv_event_t *e) {
+    delete (std::function<void()> *)e->user_data;
+  }, LV_EVENT_DELETE, cb);
 
   lv_obj_center(mbox1);
 }

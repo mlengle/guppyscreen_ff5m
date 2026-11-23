@@ -24,9 +24,9 @@ InitPanel::InitPanel(MainPanel &mp, BedMeshPanel &bmp, std::mutex& l)
 
   Config *conf = Config::get_instance();
   if (!conf->get_json("/default_printer").is_null()) {
-    lv_label_set_text(label, LV_SYMBOL_WARNING " Ждем запуска Klipper...");
+    lv_label_set_text(label, (LV_SYMBOL_WARNING + std::string(_(" Waiting for the Klipper launch..."))).c_str());
   } else {
-    lv_label_set_text(label, "Добро пожаловать в Guppy Screen. Используйте параметры, для добавления вашего принтера.");
+    lv_label_set_text(label, _("Welcome to Guppy Screen. Use the settings to add your printer."));
   }
   lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
@@ -54,14 +54,9 @@ void InitPanel::connected(KWebSocketClient &ws) {
         ws.send_jsonrpc("printer.info",
                         [](json& j) { State::get_instance()->set_data("printer_info", j, "/result"); });
 
-        json h = {
-          { "namespace", "fluidd" },
-          { "key", "console" }
-        };
-        ws.send_jsonrpc("server.database.get_item", h,
-                        [](json& j) { State::get_instance()->set_data("console", j, "/result/value"); });
+        this->main_panel.get_console_panel().load_history();
 
-        h = {
+        json h = {
           { "namespace", "guppyscreen" }
         };
         ws.send_jsonrpc("server.database.get_item", h,
@@ -112,6 +107,10 @@ void InitPanel::connected(KWebSocketClient &ws) {
           spdlog::debug("subcribing to {}", subs.dump());
           ws.send_jsonrpc("printer.objects.subscribe", subs,
                           [this](json &data) {
+                            if (!data.contains("/result/status"_json_pointer)) {
+                              spdlog::warn("printer.objects.subscribe failed: {}", data.dump());
+                              return;
+                            }
                             State::get_instance()->set_data("printer_state",
                                                             data, "/result/status");
                             this->main_panel.init(data);

@@ -13,6 +13,9 @@ class BeltsCalibrationPanel {
   ~BeltsCalibrationPanel();
 
   void foreground();
+  void set_print_locked(bool locked) {
+    ButtonContainer::set_print_locked(locked, {&calibrate_btn, &excite_btn});
+  }
   void handle_callback(lv_event_t *event);
   void handle_image_clicked(lv_event_t *event);
   void handle_macro_response(json &j);
@@ -47,8 +50,6 @@ class BeltsCalibrationPanel {
   lv_obj_t *button_cont;
   ButtonContainer calibrate_btn;
   ButtonContainer excite_btn;
-  ButtonContainer emergency_btn;
-  ButtonContainer back_btn;
   bool image_fullsized;
 
   static std::vector<std::string> axes;

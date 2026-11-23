@@ -1,4 +1,5 @@
 #include "print_panel.h"
+#include "nav.h"
 #include "file_panel.h"
 #include "state.h"
 #include "utils.h"
@@ -7,17 +8,13 @@
 #include <map>
 #include <sstream>
 
-LV_IMG_DECLARE(info_img);
 LV_IMG_DECLARE(print);
-LV_IMG_DECLARE(back);
-
-#define SORTED_BY_NAME 1 << 0
-#define SORTED_BY_MODIFIED  1 << 1
+LV_IMG_DECLARE(delete_img);
 
 PrintPanel::PrintPanel(KWebSocketClient &websocket, std::mutex &lock, PrintStatusPanel &ps)
   : NotifyConsumer(lock)
   , ws(websocket)
-  , files_cont(lv_obj_create(lv_scr_act()))
+  , files_cont(lv_obj_create(Nav::get().content()))
 #ifndef GUPPY_FF5M
   , prompt_cont(lv_obj_create(lv_scr_act()))
   , msgbox(lv_obj_create(prompt_cont))
@@ -32,18 +29,20 @@ PrintPanel::PrintPanel(KWebSocketClient &websocket, std::mutex &lock, PrintStatu
   , az_sort_btn(lv_btn_create(file_table_btns))
   , file_table(lv_table_create(left_cont))
   , file_view(lv_obj_create(files_cont))
-  , status_btn(file_view, &info_img, _("Status") /* "Статус" */, &PrintPanel::_handle_status_btn, this)
   , print_btn(file_view, &print, _("Print") /* "Печать" */, &PrintPanel::_handle_print_callback, this)
-  , back_btn(file_view, &back, _("Back") /* "Назад" */, &PrintPanel::_handle_back_btn, this)
+  , delete_btn(file_view, &delete_img, _("Delete"), &PrintPanel::_handle_delete_callback, this)
   , root("", "", 0)
   , cur_dir(&root)
   , cur_file(NULL)
   , file_panel(file_view, websocket)
   , print_status(ps)
-  , sorted_by(SORTED_BY_MODIFIED)
 {
   spdlog::trace("building print panel");
   lv_obj_move_background(files_cont);
+  // The Print tab: this file list when idle, the print status while printing.
+  Nav::get().add_tab(Nav::PRINT, files_cont, &print);
+  print_status.set_idle_screen(files_cont);
+  Nav::get().on_leave(files_cont, [this]() { file_panel.uncache_thumbnail(); });
 
   lv_obj_set_size(files_cont, LV_PCT(100), LV_PCT(100));
   lv_obj_clear_flag(files_cont, LV_OBJ_FLAG_SCROLLABLE);
@@ -57,19 +56,23 @@ PrintPanel::PrintPanel(KWebSocketClient &websocket, std::mutex &lock, PrintStatu
   lv_obj_set_style_pad_all(left_cont, 0, 0);
 
   // file view buttons
-  lv_obj_t * label = NULL;
-
-  label = lv_label_create(refresh_btn);
-  lv_label_set_text(label, _(LV_SYMBOL_REFRESH" Refresh"));
-  lv_obj_center(label);
-
-  label = lv_label_create(modified_sort_btn);
-  lv_label_set_text(label, _(LV_SYMBOL_LIST" Changed"));
-  lv_obj_center(label);
-
-  label = lv_label_create(az_sort_btn);
-  lv_label_set_text(label, _(LV_SYMBOL_LIST" A-Z"));
-  lv_obj_center(label);
+  auto set_sort_label = [](lv_obj_t *btn, const char *symbol, const char *key) {
+    lv_obj_t *label = lv_label_create(btn);
+    const char *text = _(key);
+    const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    lv_font_glyph_dsc_t glyph;
+    for (uint32_t i = 0; text[i];) {
+      if (!lv_font_get_glyph_dsc(font, &glyph, _lv_txt_encoded_next(text, &i), 0)) {
+        text = key;
+        break;
+      }
+    }
+    lv_label_set_text_fmt(label, "%s%s", symbol, text);
+    lv_obj_center(label);
+  };
+  set_sort_label(refresh_btn, LV_SYMBOL_REFRESH, " Refresh");
+  set_sort_label(modified_sort_btn, LV_SYMBOL_LIST, " Changed");
+  set_sort_label(az_sort_btn, LV_SYMBOL_LIST, " A-Z");
 
   lv_obj_add_event_cb(refresh_btn, &PrintPanel::_handle_btns, LV_EVENT_SHORT_CLICKED, this);
   lv_obj_add_event_cb(modified_sort_btn, &PrintPanel::_handle_btns, LV_EVENT_SHORT_CLICKED, this);
@@ -93,17 +96,14 @@ PrintPanel::PrintPanel(KWebSocketClient &websocket, std::mutex &lock, PrintStatu
   lv_obj_clear_flag(file_view, LV_OBJ_FLAG_SCROLLABLE);
 
   static lv_coord_t grid_main_row_dsc[] = {LV_GRID_FR(8), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
-  static lv_coord_t grid_main_col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+  static lv_coord_t grid_main_col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
   lv_obj_set_grid_dsc_array(file_view, grid_main_col_dsc, grid_main_row_dsc);
-  lv_obj_set_grid_cell(file_panel.get_container(), LV_GRID_ALIGN_CENTER, 0, 3, LV_GRID_ALIGN_CENTER, 0, 1);
-
-  lv_obj_set_grid_cell(status_btn.get_container(), LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_END, 1, 1);
+  lv_obj_set_grid_cell(file_panel.get_container(), LV_GRID_ALIGN_CENTER, 0, 2, LV_GRID_ALIGN_CENTER, 0, 1);
   lv_obj_set_grid_cell(print_btn.get_container(), LV_GRID_ALIGN_CENTER, 1, 1, LV_GRID_ALIGN_END, 1, 1);
-  lv_obj_set_grid_cell(back_btn.get_container(), LV_GRID_ALIGN_CENTER, 2, 1, LV_GRID_ALIGN_END, 1, 1);
-
-  lv_obj_move_foreground(back_btn.get_container());
+  lv_obj_set_grid_cell(delete_btn.get_container(), LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_END, 1, 1);
+  delete_btn.disable();
   lv_obj_move_foreground(print_btn.get_container());
-  lv_obj_move_foreground(status_btn.get_container());
+  lv_obj_move_foreground(delete_btn.get_container());
 
 #ifndef GUPPY_FF5M
   // prompt
@@ -122,10 +122,10 @@ PrintPanel::PrintPanel(KWebSocketClient &websocket, std::mutex &lock, PrintStatu
   lv_obj_align(job_btn, LV_ALIGN_BOTTOM_MID, 0, 0);
 
   lv_obj_add_event_cb(cancel_btn, &PrintPanel::_handle_btns, LV_EVENT_SHORT_CLICKED, this);
-  lv_obj_align(cancel_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+  lv_obj_align(cancel_btn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
   lv_obj_add_event_cb(queue_btn, &PrintPanel::_handle_btns, LV_EVENT_SHORT_CLICKED, this);
-  lv_obj_align(queue_btn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  lv_obj_align(queue_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 
   label = lv_label_create(job_btn);
   lv_label_set_text(label, _("Show task") /* "Показать задание" */);
@@ -161,11 +161,6 @@ PrintPanel::~PrintPanel() {
 #endif
 }
 
-void PrintPanel::populate_files(json &j) {
-  sorted_by = SORTED_BY_MODIFIED;
-  show_dir(cur_dir, SORTED_BY_MODIFIED);
-}
-
 void PrintPanel::consume(json &j) {
   if (j.contains("method") && j["method"] == "notify_filelist_changed") {
     auto action = j["/params/0/action"_json_pointer];
@@ -180,49 +175,31 @@ void PrintPanel::consume(json &j) {
   std::lock_guard<std::mutex> lock(lv_lock);
   if(pstat_state.template get<std::string>() != "printing"
      && pstat_state.template get<std::string>() != "paused") {
-    status_btn.disable();
     print_btn.enable();
   } else {
-    status_btn.enable();
     print_btn.disable();
   }
 }
 
 void PrintPanel::subscribe() {
   ws.send_jsonrpc("server.files.list", R"({"root":"gcodes"})"_json, [this](json &d) {
+    const auto files = d.find("result");
+    if (files == d.end() || !files->is_array()) {
+      spdlog::warn("file list unavailable: {}", d.dump());
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(lv_lock);
     std::string cur_path = cur_dir->full_path;
-    root.clear();
     cur_file = NULL;
-    cur_dir = NULL;
+    root.clear();
 
-    if (d.contains("result")) {
-      for (auto f : d["result"]) {
-        root.add_path(KUtils::split(f["path"], '/'), f["path"], f["modified"].template get<uint32_t>());
-      }
+    for (const auto &f : *files) {
+      root.add_path(KUtils::split(f.at("path"), '/'), f.at("path"), f.at("modified").template get<uint32_t>());
     }
-    Tree *dir = root.find_path(KUtils::split(cur_path, '/'));
-    // need to simply this using the directory endpoint
-    cur_dir = dir;
-    this->populate_files(d);
+    cur_dir = root.find_path(KUtils::split(cur_path, '/'));
+    show_dir(cur_dir);
   });
-}
-
-void PrintPanel::foreground() {
-  json &pstat_state = State::get_instance()
-    ->get_data("/printer_state/print_stats/state"_json_pointer);
-  spdlog::debug("print panel print stats {}",
-                pstat_state.is_null() ? "nil" : pstat_state.template get<std::string>());
-
-  if (!pstat_state.is_null()
-      && pstat_state.template get<std::string>() != "printing"
-      && pstat_state.template get<std::string>() != "paused") {
-    status_btn.disable();
-  } else {
-    status_btn.enable();
-  }
-
-  lv_obj_move_foreground(files_cont);
 }
 
 void PrintPanel::handle_callback(lv_event_t *e) {
@@ -246,32 +223,37 @@ void PrintPanel::handle_callback(lv_event_t *e) {
       if ((strcmp(filename, "..") == 0)) {
         if (cur_dir->parent != cur_dir) {
           cur_dir = cur_dir->parent;
-          show_dir(cur_dir, sorted_by);
+          show_dir(cur_dir);
         }
       } else {
         Tree *dir = cur_dir->get_child(filename);
         if (dir != NULL) {
           cur_dir = dir;
-          show_dir(cur_dir, sorted_by);
+          show_dir(cur_dir);
         }
       }
     }
     else {
-      if (cur_file != cur_dir->get_child(filename)) {
-        cur_file = cur_dir->get_child(filename);
+      Tree *selected = cur_dir->get_child(filename);
+      if (selected != NULL && (cur_file != selected || !metadata_loaded)) {
+        cur_file = selected;
         show_file_detail(cur_file);
       }
     }
   }
 }
 
-void PrintPanel::show_dir(Tree *dir, uint32_t sort_type) {
+void PrintPanel::show_dir(Tree *dir) {
+  delete_btn.disable();
+  ++metadata_request_id;
+  cur_file = NULL;
+  metadata_loaded = false;
   uint32_t index = 0;
   lv_table_set_cell_value_fmt(file_table, index++, 0, LV_SYMBOL_DIRECTORY "  %s", "..");
 
-  bool reversed = sorted_by & sort_type;
+  bool reversed = reverse_sort;
   std::vector<Tree> sorted_files;
-  if (sort_type == SORTED_BY_MODIFIED) {
+  if (sorted_by == SortByModified) {
     KUtils::sort_map_values<std::string, Tree>(dir->children, sorted_files, [reversed](Tree &x, Tree &y) {
         if (x.is_leaf() && !y.is_leaf()) {
           return false;
@@ -279,7 +261,7 @@ void PrintPanel::show_dir(Tree *dir, uint32_t sort_type) {
           return true;
         }
 
-        return reversed ? x.date_modified > y.date_modified : y.date_modified > x.date_modified;
+        return reversed ? x.date_modified < y.date_modified : x.date_modified > y.date_modified;
       });
   } else {
     KUtils::sort_map_values<std::string, Tree>(dir->children, sorted_files, [reversed](Tree &x, Tree &y) {
@@ -289,11 +271,10 @@ void PrintPanel::show_dir(Tree *dir, uint32_t sort_type) {
           return true;
         }
 
-        return reversed ? x.name > y.name : y.name > x.name;
+        return reversed ? x.name > y.name : x.name < y.name;
       });
   }
 
-  sorted_by = (sorted_by ^ sort_type) & sort_type;
   for (const auto &c : sorted_files) {
     if (c.is_leaf()) {
       lv_table_set_cell_value_fmt(file_table, index, 0, LV_SYMBOL_FILE "  %s", c.name.c_str());
@@ -317,38 +298,37 @@ void PrintPanel::show_dir(Tree *dir, uint32_t sort_type) {
       break;
     }
   }
-
+  if (cur_file == NULL) {
+    json none = {{"result", json::object()}};
+    file_panel.refresh_view(none, "");
+  }
 }
 
 void PrintPanel::show_file_detail(Tree *f) {
-  if (f->is_leaf()) {
-    if (f->contains_metadata()) {
-      file_panel.refresh_view(f->metadata, f->full_path);
-    } else {
-      spdlog::trace("getting metadata for {}", f->name);
-      ws.send_jsonrpc("server.files.metadata",
-                      json::parse(R"({"filename":")" + f->full_path + R"("})"),
-                      [f, this](json &d) { this->handle_metadata(f, d); });
-    }
-  }
+  if (!delete_pending) delete_btn.enable();
+  const uint32_t request_id = ++metadata_request_id;
+  metadata_loaded = false;
+  json none = {{"result", json::object()}};
+  file_panel.refresh_view(none, f->full_path);
+  ws.send_jsonrpc("server.files.metadata", {{"filename", f->full_path}},
+                  [path = f->full_path, request_id, this](json &d) { handle_metadata(path, request_id, d); });
 }
 
-void PrintPanel::handle_metadata(Tree *f, json &j) {
+void PrintPanel::handle_metadata(const std::string &path, uint32_t request_id, json &j) {
   spdlog::trace("handling metadata callback");
-  if (f->is_leaf()) {
-    if (j.contains("result")) {
-      std::lock_guard<std::mutex> lock(lv_lock);
-      f->set_metadata(j);
-      file_panel.refresh_view(f->metadata, f->full_path);
-    }
+  std::lock_guard<std::mutex> lock(lv_lock);
+  if (request_id != metadata_request_id || cur_file == NULL || !cur_file->is_leaf() || cur_file->full_path != path) {
+    return;
   }
-}
-
-void PrintPanel::handle_back_btn(lv_event_t *event) {
-  lv_obj_t *btn = lv_event_get_current_target(event);
-  if (btn == back_btn.get_container()) {
-    lv_obj_move_background(files_cont);
-    print_status.background();
+  if (j.contains("result")) {
+    metadata_loaded = true;
+    file_panel.refresh_view(j, path);
+  } else {
+    // No metadata (Moonraker: "Metadata not available"): show this file
+    // with its details unknown, not the previous file's. A new tap retries.
+    spdlog::warn("no metadata for {}: {}", path, j.value("error", json()).dump());
+    json none = {{"result", json::object()}};
+    file_panel.refresh_view(none, path);
   }
 }
 
@@ -371,8 +351,17 @@ void PrintPanel::handle_print_callback(lv_event_t *event) {
 
       json fname_input = {{"filename", cur_file->full_path }};
       ws.gcode_script("ZCONTROL_ON");
-      ws.send_jsonrpc("printer.print.start", fname_input);
-      print_status.foreground();
+      // One print per tap: enabled again when Klipper reports an idle state
+      // (consume) or the start fails. The print status shows when Klipper
+      // reports printing.
+      print_btn.disable();
+      ws.send_jsonrpc("printer.print.start", fname_input, [this](json &d) {
+        if (d.contains("error")) {
+          spdlog::warn("print start failed: {}", d["error"].dump());
+          std::lock_guard<std::mutex> lock(lv_lock);
+          print_btn.enable();
+        }
+      });
 
     } else {
 #ifndef GUPPY_FF5M
@@ -385,12 +374,42 @@ void PrintPanel::handle_print_callback(lv_event_t *event) {
   }
 }
 
-void PrintPanel::handle_status_btn(lv_event_t *event) {
-  lv_event_code_t code = lv_event_get_code(event);
-  if (code == LV_EVENT_SHORT_CLICKED && cur_file != NULL) {
-    spdlog::trace("status button clicked");
-    print_status.foreground();
-  }
+void PrintPanel::handle_delete_callback(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_SHORT_CLICKED || !cur_file || delete_pending) return;
+
+  const std::string path = cur_file->full_path;
+  ButtonContainer::confirm(fmt::format(_("Delete file \"{}\"?"), cur_file->name), [this, path]() {
+    if (!cur_file || cur_file->full_path != path || delete_pending) return;
+
+    delete_pending = true;
+    delete_btn.disable();
+    int sent = ws.send_jsonrpc("server.files.delete_file", {{"path", "gcodes/" + path}},
+      [this, path](json &reply) {
+        bool ok = reply.contains("result") && !reply.contains("error");
+        {
+          std::lock_guard<std::mutex> lock(lv_lock);
+          delete_pending = false;
+          if (ok) {
+            file_panel.uncache_thumbnail();
+            ++metadata_request_id;
+            cur_file = NULL;
+            delete_btn.disable();
+          } else {
+            spdlog::warn("file deletion failed for {}: {}", path, reply.dump());
+            if (cur_file && cur_file->full_path == path) delete_btn.enable();
+            lv_obj_t *msg = lv_msgbox_create(NULL, NULL, _("Could not delete the file."), NULL, true);
+            lv_obj_center(msg);
+          }
+        }
+        if (ok) subscribe();
+      });
+    if (sent < 0) {
+      delete_pending = false;
+      delete_btn.enable();
+      lv_obj_t *msg = lv_msgbox_create(NULL, NULL, _("Could not delete the file."), NULL, true);
+      lv_obj_center(msg);
+    }
+  });
 }
 
 void PrintPanel::handle_btns(lv_event_t *event) {
@@ -419,11 +438,11 @@ void PrintPanel::handle_btns(lv_event_t *event) {
     if (btn == refresh_btn) {
       subscribe();
 
-    } else if (btn == modified_sort_btn) {
-      show_dir(cur_dir, SORTED_BY_MODIFIED);
-
-    } else if (btn == az_sort_btn) {
-      show_dir(cur_dir, SORTED_BY_NAME);
+    } else if (btn == modified_sort_btn || btn == az_sort_btn) {
+      const Sort sort_type = btn == modified_sort_btn ? SortByModified : SortByName;
+      reverse_sort = sorted_by == sort_type && !reverse_sort;
+      sorted_by = sort_type;
+      show_dir(cur_dir);
     }
   }
 }

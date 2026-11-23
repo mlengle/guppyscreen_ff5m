@@ -66,8 +66,26 @@ class SensorContainer {
   lv_obj_t *get_sensor();
   void update_target(int new_target);
   void update_value(int new_value);
+  void attach_series(lv_obj_t *chart, lv_chart_series_t *series);
   void update_series(int value);
   int get_target_value();
+  int get_value() { return value; }
+  const std::string &get_id() const { return id; }
+  static constexpr lv_coord_t stripe_width() { return 5; }
+#ifdef GUPPY_FF5M
+  // Home's layout: a tile with the icon and the name under it, the target
+  // (red when set, grey when off) above the current temperature on the right.
+  void as_tile();
+  // The stripe's colour and the chart line's.
+  void set_color(lv_color_t color);
+  static lv_coord_t tile_width();  // a tile's width on screen
+  static constexpr lv_coord_t tile_gap() { return 6; }  // between tiles, Home and Extrude alike
+
+  // The tiles' temperature font, also the numpad's entered value: the two
+  // always match.
+  static const lv_font_t *temperature_font();
+  void highlight(bool on);
+#endif
   void handle_edit(lv_event_t *event);
   void handle_edit2(lv_event_t *event);
 
@@ -96,6 +114,9 @@ class SensorContainer {
   lv_obj_t *chart;
   lv_chart_series_t *series;
   std::time_t last_updated_ts;
+#ifdef GUPPY_FF5M
+  bool tile = false;
+#endif
 
 };
 

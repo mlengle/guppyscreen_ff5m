@@ -14,15 +14,18 @@ class MiniPrintStatus {
 
   ~MiniPrintStatus();
 
-  void show();
-  void hide();
+  void set_printing(bool printing);
   lv_obj_t *get_container();
 
-  void update_eta(std::string &eta_str);
+  void update_eta(const std::string &eta_str);
   void update_status(std::string &status_str);
   void update_progress(int p);
   void update_img(const std::string &img_path, size_t twidth);
   void reset();
+#ifdef GUPPY_FF5M
+  void update_clock(int hour, int minute);
+  void set_clock_enabled(bool enabled);
+#endif
 
  private:
   KWebSocketClient &ws;
@@ -30,6 +33,12 @@ class MiniPrintStatus {
   lv_obj_t *progress_bar;
   lv_obj_t *thumb;
   lv_obj_t *status_label;
+#ifdef GUPPY_FF5M
+  lv_obj_t *clock_hours;
+  lv_obj_t *clock_minutes;
+  lv_obj_t *clock_colon;
+  bool clock_enabled = true;
+#endif
   std::string status;
   std::string eta;
 };

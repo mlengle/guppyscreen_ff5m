@@ -11,15 +11,18 @@
 #define _(String) gettext(String)
 
 #include <map>
+#include <mutex>
 #include <vector>
 #include <atomic>
+#include <chrono>
 #include <functional>
 
 using json = nlohmann::json;
 
 class KWebSocketClient : public hv::WebSocketClient {
  public:
-  KWebSocketClient(hv::EventLoopPtr loop);
+  explicit KWebSocketClient(hv::EventLoopPtr loop,
+                            std::chrono::milliseconds reply_timeout = std::chrono::seconds(30));
   ~KWebSocketClient();
 
   int connect(const char* url,
@@ -32,7 +35,9 @@ class KWebSocketClient : public hv::WebSocketClient {
   // void register_gcode_resp(std::function<void(json&)> cb);
 
   int send_jsonrpc(const std::string &method, std::function<void(json&)> cb);
-  int send_jsonrpc(const std::string &method, const json &params, std::function<void(json&)> cb);
+  // keep_macros: the reply keeps configfile's gcode_macro sections (see parse_message).
+  int send_jsonrpc(const std::string &method, const json &params, std::function<void(json&)> cb,
+                   bool keep_macros = false);
   int send_jsonrpc(const std::string &method, const json &params, NotifyConsumer *consumer);
   int send_jsonrpc(const std::string &method, const json &params);
   int send_jsonrpc(const std::string &method);
@@ -42,9 +47,29 @@ class KWebSocketClient : public hv::WebSocketClient {
                                 std::string handler_name,
                                 std::function<void(json&)> cb);
 
+  // Parses a Moonraker message. Klipper's configfile (in query/subscribe
+  // results at /result/status/configfile and in notify_status_update at
+  // /params/0/configfile) holds the whole printer config twice, ~460 kB of
+  // text on zMod, mostly gcode_macro sections. Only the config/settings
+  // sections the panels read become JSON nodes; the rest is skipped while
+  // parsing. With keep_macros, config's gcode_macro sections are kept too.
+  static json parse_message(const std::string &msg, bool keep_macros = false);
+
  private:
-  std::map<uint32_t, std::function<void(json&)>> callbacks;
-  std::map<uint32_t, NotifyConsumer*> consumers;
+  struct PendingReply {
+    std::function<void(json&)> callback;
+    bool keep_macros;
+    std::chrono::steady_clock::time_point expires;
+  };
+  int send_request(const std::string &method, const json *params,
+                   std::function<void(json&)> cb = {}, bool keep_macros = false);
+  void expire_pending();
+  void stop_expiry_timer();
+  const std::chrono::milliseconds reply_timeout;
+  std::atomic<hv::TimerID> expiry_timer{INVALID_TIMER_ID};
+  std::map<uint64_t, PendingReply> pending;
+  WebSocketChannelPtr active_channel;
+  std::mutex pending_lock;
   std::vector<NotifyConsumer*> notify_consumers;
   // std::vector<std::function<void(json&)>> gcode_resp_cbs;
 

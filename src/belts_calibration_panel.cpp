@@ -1,4 +1,6 @@
 #include "belts_calibration_panel.h"
+#include "state.h"
+#include "nav.h"
 #include "utils.h"
 #include "config.h"
 #include "spdlog/spdlog.h"
@@ -9,10 +11,8 @@ namespace fs = std::experimental::filesystem;
 
 LV_IMG_DECLARE(resume);
 LV_IMG_DECLARE(inputshaper_img);
-LV_IMG_DECLARE(emergency);
-LV_IMG_DECLARE(back);
 
-#define BELTS_PNG "belts_calibration.png"
+#define BELTS_PNG "mod_data/belts_calibration.png"
 
 std::vector<std::string> BeltsCalibrationPanel::axes = {
   "x",
@@ -24,7 +24,7 @@ std::vector<std::string> BeltsCalibrationPanel::axes = {
 BeltsCalibrationPanel::BeltsCalibrationPanel(KWebSocketClient &c, std::mutex &l)
   : ws(c)
   , lv_lock(l)
-  , cont(lv_obj_create(lv_scr_act()))
+  , cont(lv_obj_create(Nav::get().content()))
   , graph_cont(lv_obj_create(cont))
   , graph(lv_img_create(graph_cont))
   , spinner(lv_spinner_create(cont, 1000, 60))
@@ -35,16 +35,10 @@ BeltsCalibrationPanel::BeltsCalibrationPanel(KWebSocketClient &c, std::mutex &l)
   , button_cont(lv_obj_create(cont))
   , calibrate_btn(button_cont, &resume, _("Shake Belts") /* "Вибрировать ремнями" */, &BeltsCalibrationPanel::_handle_callback, this)
   , excite_btn(button_cont, &inputshaper_img, _("Excitate") /* "Запуск" */, &BeltsCalibrationPanel::_handle_callback, this)
-  , emergency_btn(button_cont, &emergency, _("Stop") /* "Стоп" */, &BeltsCalibrationPanel::_handle_callback, this,
-                  _("Emergency printer shutdown?") /* "Аварийно отключить принтер?" */,
-                  [&c]() {
-                    spdlog::debug("emergency stop pressed");
-                    c.send_jsonrpc("printer.emergency_stop");
-                  })
-  , back_btn(button_cont, &back, _("Back") /* "Назад" */, &BeltsCalibrationPanel::_handle_callback, this)
   , image_fullsized(false)
 {
   lv_obj_move_background(cont);
+  Nav::get().on_leave(cont, [this]() { KUtils::uncache_img(graph); });
 
   lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_size(cont, LV_PCT(100), LV_PCT(100));
@@ -60,11 +54,11 @@ BeltsCalibrationPanel::BeltsCalibrationPanel(KWebSocketClient &c, std::mutex &l)
   lv_img_set_zoom(graph, 100);
   std::string path = "/opt/config/mod_data/belts_calibration.png";
   if (fs::exists(path)) {
-      lv_img_set_src(graph, "A:/opt/config/mod_data/belts_calibration.png");
+      KUtils::set_img_src(graph, "A:/opt/config/mod_data/belts_calibration.png");
   }
   lv_obj_center(graph);
 
-  lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+  KUtils::spinner_hide(spinner);  // its animation runs only while shown
   lv_obj_set_size(spinner, 100, 100);
 
   auto scale = (double)lv_disp_get_physical_hor_res(NULL) / 800.0;
@@ -123,6 +117,7 @@ void BeltsCalibrationPanel::foreground() {
 }
 
 void BeltsCalibrationPanel::handle_callback(lv_event_t *event) {
+  if (State::print_pause_active()) return;
   lv_obj_t *btn = lv_event_get_current_target(event);
   if (btn == calibrate_btn.get_container()) {
     auto config_root = KUtils::get_root_path("config");
@@ -132,7 +127,7 @@ void BeltsCalibrationPanel::handle_callback(lv_event_t *event) {
       ws.gcode_script("G28");
     }
 
-    auto screen_width = (double)lv_disp_get_physical_hor_res(NULL) / 100.0;
+    auto screen_width = (double)Nav::content_width() / 100.0;  // beside the nav bar
     auto screen_height = (double)lv_disp_get_physical_ver_res(NULL) / 100.0;
     ws.gcode_script(fmt::format("_GUPPY_BELTS_SHAPER_CALIBRATION PNG_OUT_PATH={} PNG_WIDTH={} PNG_HEIGHT={}",
                                 png_path, screen_width, screen_height));
@@ -142,9 +137,9 @@ void BeltsCalibrationPanel::handle_callback(lv_event_t *event) {
 
 
     lv_obj_add_flag(graph, LV_OBJ_FLAG_HIDDEN);
-    lv_img_set_src(graph, NULL);
+    KUtils::set_img_src(graph, NULL);
     lv_obj_invalidate(graph);
-    lv_obj_clear_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+    KUtils::spinner_show(spinner);
     lv_obj_move_foreground(spinner);
 
   } else if (btn == excite_btn.get_container()) {
@@ -157,10 +152,6 @@ void BeltsCalibrationPanel::handle_callback(lv_event_t *event) {
     }
     ws.gcode_script(fmt::format("_GUPPY_EXCITATE_AXIS_AT_FREQ FREQUENCY={} AXIS={}", excite_hz, excite_buf));
 
-  } else if (btn == back_btn.get_container()) {
-    lv_obj_move_background(cont);
-  } else if (btn == emergency_btn.get_container()) {
-    ws.send_jsonrpc("printer.emergency_stop");
   }
 }
 
@@ -202,9 +193,9 @@ void BeltsCalibrationPanel::handle_macro_response(json &j) {
                     ? png_path
                     : KUtils::download_file("config", BELTS_PNG, Config::get_instance()->get_thumbnail_path()));
 
-      lv_img_set_src(graph, "/opt/config/mod_data/belts_calibration.png");
+      KUtils::set_img_src(graph, png_path.c_str());
       lv_obj_clear_flag(graph, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+      KUtils::spinner_hide(spinner);
       lv_obj_move_background(spinner);
     }
   }

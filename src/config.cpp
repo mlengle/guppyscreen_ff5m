@@ -41,13 +41,13 @@ void Config::init(std::string config_path, const std::string thumbdir) {
   json sensors_conf = {
     {
       {"id", "extruder"},
-      {"display_name", "Экструдер"},
+      {"display_name", "Extruder"},
       {"controllable", true},
       {"color", "red"}
     },
     {
       {"id", "heater_bed"},
-      {"display_name", "Стол"},
+      {"display_name", "Bed"},
       {"controllable", true},
       {"color", "purple"}
     },
@@ -148,6 +148,19 @@ void Config::init(std::string config_path, const std::string thumbdir) {
   if (estop.is_null()) {
     data["/prompt_emergency_stop"_json_pointer] = true;
   }
+
+  auto &exclude_prompt = data["/prompt_exclude_object"_json_pointer];
+  if (exclude_prompt.is_null()) exclude_prompt = true;
+
+  auto &screw_nozzle_temp = data["/screw_nozzle_temp"_json_pointer];
+  if (screw_nozzle_temp.is_null()) screw_nozzle_temp = 245;
+  auto &screw_bed_temp = data["/screw_bed_temp"_json_pointer];
+  if (screw_bed_temp.is_null()) screw_bed_temp = 80;
+
+#ifdef GUPPY_FF5M
+  auto &show_clock = data["/show_clock"_json_pointer];
+  if (show_clock.is_null()) show_clock = true;
+#endif
 
   auto &display_sleep = data["/display_sleep_sec"_json_pointer];
   if (display_sleep.is_null()) {

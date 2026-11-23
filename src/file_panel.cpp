@@ -66,27 +66,27 @@ void FilePanel::refresh_view(json &j, const std::string &gcode_path) {
   auto filename = fs::path(gcode_path).filename();
   lv_label_set_text(fname_label, filename.string().c_str());
 
+  v = j["/result/size"_json_pointer];
   std::string detail;
-  detail = fmt::format(_("Weight: {} г|{}\nTime: {}\nSize: {} MB"),
+  detail = fmt::format(_("Weight: {} g|{}\nTime: {}\nSize: {} MB"),
                            fweight > 0 ? std::to_string(fweight) : _("(Unknown)"),
                            time_stream.str(),
                            eta > 0 ? KUtils::eta_string(eta) : _("(Unknown)"),
-                           KUtils::bytes_to_mb(j["result"]["size"].template get<size_t>()));
+                           v.is_null() ? std::string(_("(Unknown)")) : std::to_string(KUtils::bytes_to_mb(v.template get<size_t>())));
+  // The details of this file, with a thumbnail or not.
+  lv_label_set_text(detail_label, detail.c_str());
 
   auto width_scale = (double)lv_disp_get_physical_hor_res(NULL) / 800.0;
   auto thumb_detail = KUtils::get_thumbnail(gcode_path, j, width_scale);
   std::string fullpath = thumb_detail.first;
   if (fullpath.length() > 0) {
-    lv_label_set_text(detail_label, detail.c_str());
     auto screen_width = lv_disp_get_physical_hor_res(NULL);
     uint32_t normalized_thumb_scale = ((0.29 * (double)screen_width) / (double)thumb_detail.second) * 256;
-    lv_img_set_src(thumbnail, ("A:" + fullpath).c_str());
+    KUtils::set_img_src(thumbnail, ("A:" + fullpath).c_str());
     lv_img_set_zoom(thumbnail, normalized_thumb_scale);
   } else {
     // free src
-    lv_img_set_src(thumbnail, NULL);
-    // hack to color in empty space.
-    ((lv_img_t*)thumbnail)->src_type = LV_IMG_SRC_SYMBOL;
+    KUtils::set_img_src(thumbnail, NULL);
   }
 }
 
@@ -96,6 +96,10 @@ void FilePanel::foreground() {
 
 lv_obj_t *FilePanel::get_container() {
   return file_cont;
+}
+
+void FilePanel::uncache_thumbnail() {
+  KUtils::uncache_img(thumbnail);
 }
 
 const char* FilePanel::get_thumbnail_path() {

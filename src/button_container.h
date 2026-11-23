@@ -5,6 +5,7 @@
 
 #include <string>
 #include <functional>
+#include <initializer_list>
 
 class ButtonContainer {
  public:
@@ -21,6 +22,7 @@ class ButtonContainer {
   lv_obj_t *get_button();
   void disable();
   void enable();
+  static void set_print_locked(bool locked, std::initializer_list<ButtonContainer *> buttons);
   void hide();
 
   void set_image(const void *img);
@@ -28,6 +30,11 @@ class ButtonContainer {
   void handle_callback(lv_event_t *event);
 
   void handle_prompt();
+
+  // A confirmation dialog with Cancel on the left and OK on the right.
+  static void confirm(const std::string &text, std::function<void()> on_ok);
+  // guppyconfig.json /prompt_emergency_stop: ask before an emergency stop.
+  static bool prompt_emergency_stop();
   void run_callback();
 
   static void _handle_callback(lv_event_t *event) {
@@ -36,6 +43,9 @@ class ButtonContainer {
   };
 
  private:
+  void refresh_enabled();
+  bool enabled = true;
+  bool print_locked = false;
   lv_obj_t *btn_cont;
   lv_obj_t *btn;
   lv_obj_t *label;
