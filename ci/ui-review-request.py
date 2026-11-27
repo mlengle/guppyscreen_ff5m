@@ -6,7 +6,7 @@ import re
 import sys
 from pathlib import Path
 
-# Постоянно доступные окна AD5M: открытие без реальных действий над принтером.
+# Общие окна C5 Pro, AD5X и AD5M: открытие без реальных действий над принтером.
 SCREENS = {
     'home': 'tab home',
     'print': 'tab print',
@@ -18,6 +18,7 @@ SCREENS = {
     'led': 'tab home\ntap LED',
     'fine-tune': 'tab home\ntap Fine Tune',
     'bed-mesh': 'tab home\ntap Bed Mesh',
+    'screw-adjustment': 'tab home\ntap Bed Mesh\ntap Screw adjustment',
     'limits': 'tab tune\ntap Limits',
     'retract': 'tab tune\ntap Retract',
     'input-shaper': 'tab tune\ntap Input Shaper',
@@ -32,8 +33,9 @@ SCREENS = {
         'status {"print_stats":{"state":"printing","filename":"cube.gcode"},'
         '"exclude_object":{"objects":[{"name":"CENTER_CUBE","polygon":'
         '[[88,88],[128,88],[128,128],[88,128]]},'
-        '{"name":"CORNER_CUBE","polygon":[[20,20],[40,20],[40,40],[20,40]]}],'
-        '"excluded_objects":[]}}\n'
+        '{"name":"CORNER_CUBE","polygon":[[20,20],[40,20],[40,40],[20,40]]},'
+        '{"name":"EXCLUDED_CUBE","polygon":[[88,20],[128,20],[128,60],[88,60]]}],'
+        '"excluded_objects":["EXCLUDED_CUBE"],"current_object":"CENTER_CUBE"}}\n'
         'tab print\n'
         'tap_parent cube.gcode'
     ),
@@ -75,6 +77,8 @@ def scenario(command):
             lines.append(f'sleep {delay}')
         filename = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'screen'
         lines.extend((f'save {filename}-{index}', f'memory {filename}-{index}'))
+        if name.lower() == 'screw-adjustment':
+            lines.append('tap_optional Close')
     return '\n'.join(lines) + '\n'
 
 

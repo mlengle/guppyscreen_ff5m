@@ -35,6 +35,8 @@ SettingPanel::SettingPanel(KWebSocketClient &c, std::mutex &l, lv_obj_t *parent,
                            std::function<void()> open_macros_cb, std::function<void()> open_console_cb
 #ifdef GUPPY_FF5M
                            , std::function<void(bool)> clock_changed
+                           , std::function<void()> filament_colors_changed
+                           , std::function<void()> chart_max_changed
 #endif
                            )
   : ws(c)
@@ -47,6 +49,8 @@ SettingPanel::SettingPanel(KWebSocketClient &c, std::mutex &l, lv_obj_t *parent,
   , sysinfo_panel(c
 #ifdef GUPPY_FF5M
                   , std::move(clock_changed)
+                  , std::move(filament_colors_changed)
+                  , std::move(chart_max_changed)
 #endif
                   )
 //  , spoolman_panel(sm)

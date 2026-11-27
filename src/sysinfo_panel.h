@@ -14,6 +14,8 @@ class SysInfoPanel {
   SysInfoPanel(KWebSocketClient &c
 #ifdef GUPPY_FF5M
                , std::function<void(bool)> clock_changed
+               , std::function<void()> filament_colors_changed
+               , std::function<void()> chart_max_changed_cb
 #endif
                );
   ~SysInfoPanel();
@@ -52,6 +54,14 @@ class SysInfoPanel {
   lv_obj_t *clock_toggle_cont;
   lv_obj_t *clock_toggle;
   std::function<void(bool)> clock_changed;
+  lv_obj_t *filament_colors_cont;
+  lv_obj_t *filament_colors_toggle;
+  std::function<void()> filament_colors_changed;
+  // Верх шкалы графика Home (SensorContainer::chart_max_temp).
+  lv_obj_t *chart_max_cont;
+  lv_obj_t *chart_max_dd;
+  std::function<void()> chart_max_changed;
+  void show_chart_max();  // выбрать в списке текущее значение
 #endif
 
 #ifndef GUPPY_FF5M

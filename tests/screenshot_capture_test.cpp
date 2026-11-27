@@ -23,11 +23,10 @@ TEST_CASE("Screenshot: scripted") {
   std::ifstream script(script_path);
   REQUIRE_MESSAGE(script.good(), "Cannot open screenshot scenario: " << script_path);
   bool shaper_graphs = false;
+  bool screw_adjustment = false;
   for (std::string line; std::getline(script, line);) {
-    if (line == "tap Input Shaper") {
-      shaper_graphs = true;
-      break;
-    }
+    if (line == "tap Input Shaper") shaper_graphs = true;
+    if (line == "tap Screw adjustment") screw_adjustment = true;
   }
   script.clear();
   script.seekg(0);
@@ -37,17 +36,45 @@ TEST_CASE("Screenshot: scripted") {
     settings = json::parse(config);
   const char *profile = std::getenv("GUPPY_SCREENSHOT_PROFILE");
   const bool c5pro = profile && std::string(profile) == "c5pro";
-  if (profile && !c5pro && std::string(profile) != "ad5m")
+  const bool ad5x = profile && std::string(profile) == "ad5x";
+  if (profile && !c5pro && !ad5x && std::string(profile) != "ad5m")
     FAIL("Unknown screenshot profile: " << profile);
-  if (c5pro) {
-    json config = json::parse(std::ifstream(app::fixture("guppyconfig_c5pro.json")));
-    const json &printer = config["printers"]["C5Pro"];
+  if (c5pro || ad5x) {
+    json config = json::parse(std::ifstream(app::fixture(c5pro ? "guppyconfig_c5pro.json" : "guppyconfig_ad5x.json")));
+    const json &printer = config["printers"][c5pro ? "C5Pro" : "AD5X"];
     settings.merge_patch({{"printers", {{"FF5M", {
       {"monitored_sensors", printer["monitored_sensors"]},
       {"fans", printer["fans"]}
     }}}}});
   }
-  FakeMoonraker moonraker(app::fixture(c5pro ? "c5pro_basic.json" : "ad5m_basic.json"));
+  FakeMoonraker moonraker(app::fixture(c5pro ? "c5pro_basic.json" : ad5x ? "ad5x_basic.json" : "ad5m_basic.json"));
+  if (c5pro || ad5x) {
+    json initial = moonraker.result("printer.objects.subscribe");
+    initial["status"]["zmod_color"]["slots"] = json::array({
+      {{"ID", "1"}, {"Material", "PLA"}, {"Color", "Blue"}, {"HEX", "3399FF"}, {"hasFilament", true}},
+      {{"ID", "2"}, {"Material", "PETG"}, {"Color", "Pink"}, {"HEX", "E040A0"}, {"hasFilament", true}},
+      {{"ID", "3"}, {"Material", ""}, {"Color", ""}, {"HEX", ""}, {"hasFilament", false}},
+      {{"ID", "4"}, {"Material", "PLA"}, {"Color", "White"}, {"HEX", "FFFFFF"}, {"hasFilament", true}}
+    });
+    moonraker.set_result("printer.objects.subscribe", initial);
+  }
+  if (screw_adjustment) {
+    auto initial = moonraker.result("printer.objects.subscribe");
+    auto &status = initial["status"];
+    status["configfile"]["settings"]["screws_tilt_adjust"] = {
+      {"screw1", {12.5, 12.5}}, {"screw1_name", "Left Near"},
+      {"screw2", {202, 12.5}}, {"screw2_name", "Right Near"},
+      {"screw3", {202, 202}}, {"screw3_name", "Right Far"},
+      {"screw4", {12.5, 202}}, {"screw4_name", "Left Far"}
+    };
+    status["screws_tilt_adjust"]["results"] = {
+      {"screw1", {{"z", -1.8675}, {"is_base", true}, {"sign", "CW"}, {"adjust", "00:00"}}},
+      {"screw2", {{"z", -1.8692}, {"is_base", false}, {"sign", "CW"}, {"adjust", "00:00"}}},
+      {"screw3", {{"z", -1.9092}, {"is_base", false}, {"sign", "CW"}, {"adjust", "00:05"}}},
+      {"screw4", {{"z", -1.9175}, {"is_base", false}, {"sign", "CCW"}, {"adjust", "00:06"}}}
+    };
+    moonraker.set_result("printer.objects.subscribe", initial);
+  }
   PrintFile sample;
   sample.path = "cube.gcode";
   FakePrinter::Options options;
@@ -111,6 +138,10 @@ TEST_CASE("Screenshot: scripted") {
     } else if (command == "tap" || command == "tap_optional") {
       if (command == "tap_optional" && !ui::find_label(arg)) continue;
       ui::tap_label(arg);
+      if (arg == "Screw adjustment" &&
+          (ui::find_label("Measuring bed screws…") || ui::find_label("Measure again"))) {
+        REQUIRE_MESSAGE(app::wait_until([] { return ui::table_has_row("Left Far"); }), ui::dump_screen());
+      }
     } else if (command == "tap_parent") {
       lv_obj_t *label = ui::find_label(arg);
       REQUIRE_MESSAGE(label != nullptr, "Missing label: " << arg);

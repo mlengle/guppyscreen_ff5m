@@ -1,5 +1,6 @@
 #include "main_panel.h"
 #include "state.h"
+#include "config.h"
 #include "lvgl/lvgl.h"
 #include "spdlog/spdlog.h"
 
@@ -55,6 +56,8 @@ MainPanel::MainPanel(KWebSocketClient &websocket,
   , setting_panel(websocket, lock, setting_tab, [this]() { open_macros(); }, [this]() { open_console(); }
 #ifdef GUPPY_FF5M
                   , [this](bool enabled) { print_status_panel.set_clock_enabled(enabled); }
+                  , [this]() { refresh_filament_colors(); }
+                  , [this]() { SensorContainer::set_chart_max(temp_chart, SensorContainer::chart_max_temp()); }
 #endif
                   )
   , main_cont(lv_obj_create(main_tab))
@@ -121,6 +124,10 @@ PrinterTunePanel& MainPanel::get_tune_panel() {
 
 void MainPanel::init(json &j) {
   std::lock_guard<std::mutex> lock(lv_lock);
+#ifdef GUPPY_FF5M
+  // Экструдеры уже известны: верх шкалы по умолчанию зависит от их числа (C5).
+  SensorContainer::set_chart_max(temp_chart, SensorContainer::chart_max_temp());
+#endif
   homing_panel.update_motion_status();
   for (const auto &el : sensors) {
     auto target_value = j[json::json_pointer(fmt::format("/result/status/{}/target", el.first))];
@@ -136,6 +143,11 @@ void MainPanel::init(json &j) {
       el.second->update_value(value);
     }
   }
+
+#ifdef GUPPY_FF5M
+  if (j.contains("/result/status/zmod_color/slots"_json_pointer))
+    update_filament_colors(j.at("/result/status/zmod_color/slots"_json_pointer));
+#endif
 
   macros_panel.refresh();
 
@@ -198,6 +210,10 @@ void MainPanel::consume(json &j) {
       el.second->update_value(value);
     }
   }
+#ifdef GUPPY_FF5M
+  if (j.contains("/params/0/zmod_color/slots"_json_pointer))
+    update_filament_colors(j.at("/params/0/zmod_color/slots"_json_pointer));
+#endif
 }
 
 void MainPanel::create_panel() {
@@ -336,7 +352,11 @@ void MainPanel::create_main(lv_obj_t * parent)
     lv_obj_set_grid_cell(temp_chart, LV_GRID_ALIGN_END, 0, 2, LV_GRID_ALIGN_END, 2, 1);
     lv_chart_set_axis_tick(temp_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 0, 6, 5, true, 50);
 
+#ifdef GUPPY_FF5M
+    SensorContainer::style_chart(temp_chart, SensorContainer::chart_max_temp());
+#else
     lv_chart_set_div_line_count(temp_chart, 3, 8);
+#endif
     lv_chart_set_point_count(temp_chart, 500);
     lv_chart_set_zoom_x(temp_chart, 5000);
     lv_obj_scroll_to_x(temp_chart, LV_COORD_MAX, LV_ANIM_OFF);
@@ -413,6 +433,59 @@ static std::map<std::string, lv_color_t> sensor_colors(json &temp_sensors,
 }
 #endif
 
+#ifdef GUPPY_FF5M
+void MainPanel::refresh_filament_colors() {
+  update_filament_colors(State::get_instance()->get_data_copy("/printer_state/zmod_color/slots"_json_pointer));
+}
+
+void MainPanel::update_filament_colors(const json &slots) {
+  if (default_tool_colors.size() < 2) return;
+  const bool enabled = Config::get_instance()->get<bool>("/use_filament_colors");
+  for (const auto &[id, original] : default_tool_colors) {
+    lv_color_t color = original;
+    bool stripe = true;
+    if (enabled && slots.is_array()) {
+      const int tool = NozzleTiles::tool_of(id);
+      for (const auto &slot : slots) {
+        if (!slot.is_object()) continue;
+        auto index = slot.find("ID");
+        if (index == slot.end()) continue;
+        int number = -1;
+        if (index->is_number_integer()) number = index->get<int>();
+        else if (index->is_string()) {
+          const std::string value = index->get<std::string>();
+          if (value.size() == 1 && value[0] >= '1' && value[0] <= '9') number = value[0] - '0';
+        }
+        if (number != tool + 1) continue;
+        auto present = slot.find("hasFilament");
+        if (present != slot.end() && present->is_boolean() && !present->get<bool>()) {
+          color = lv_palette_main(LV_PALETTE_GREY);
+          stripe = false;
+        } else {
+          auto value = slot.find("HEX");
+          if (value == slot.end()) value = slot.find("Color");
+          if (value != slot.end() && value->is_string()) {
+            std::string hex = value->get<std::string>();
+            if (hex.size() == 7 && hex[0] == '#') hex.erase(0, 1);
+            if (hex.size() == 6 && hex.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
+              color = lv_color_hex(std::stoul(hex, nullptr, 16));
+          }
+        }
+        break;
+      }
+    }
+    auto sensor = sensors.find(id);
+    if (sensor == sensors.end()) continue;
+    lv_obj_t *tile = sensor->second->get_sensor();
+    if (lv_color_to32(lv_obj_get_style_border_color(tile, LV_PART_MAIN)) != lv_color_to32(color))
+      sensor->second->set_color(color);
+    const lv_opa_t opacity = stripe ? LV_OPA_COVER : LV_OPA_TRANSP;
+    if (lv_obj_get_style_border_opa(tile, LV_PART_MAIN) != opacity)
+      lv_obj_set_style_border_opa(tile, opacity, LV_PART_MAIN);
+  }
+}
+#endif
+
 void MainPanel::create_sensors(json &temp_sensors) {
   std::lock_guard<std::mutex> lock(lv_lock);
   sensors.clear();
@@ -421,12 +494,14 @@ void MainPanel::create_sensors(json &temp_sensors) {
   std::map<std::string, lv_color_t> colors = sensor_colors(
       temp_sensors, {{PidPanel::BED, LV_PALETTE_PURPLE}, {PidPanel::WEIGHT, LV_PALETTE_ORANGE}});
   std::vector<NozzleTiles::Nozzle> nozzles;
+  default_tool_colors.clear();
   for (auto &sensor : temp_sensors.items()) {
     int tool = NozzleTiles::tool_of(sensor.key());
     if (tool >= 0) {
       const std::string name = sensor.value()["display_name"].template get<std::string>();
       nozzles.push_back({sensor.key(), _(name.c_str()), colors[sensor.key()],
                          tool});
+      default_tool_colors[sensor.key()] = colors[sensor.key()];
     }
   }
   // Home's content area, the extruder screen's and PID's all start at the
